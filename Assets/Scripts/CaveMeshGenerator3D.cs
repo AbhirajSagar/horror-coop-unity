@@ -722,6 +722,97 @@ public class CaveMeshGenerator3D : MonoBehaviour
                 }
             }
         }
+
+        // 4. ROOM CENTRAL ROCK PILLARS & SUPPORT COLUMNS
+        if (enableRoomPillars && maxPillarsPerRoom > 0 && room.avgRadius >= minRoomRadius + 1.0f)
+        {
+            System.Random pRand = new System.Random((int)(center.x * 37f + center.z * 53f + seed.GetHashCode()));
+            int pillarCount = pRand.Next(1, maxPillarsPerRoom + 1);
+
+            for (int p = 0; p < pillarCount; p++)
+            {
+                float distFromCenter = (float)pRand.NextDouble() * (room.avgRadius * 0.45f);
+                float pAngle = (float)pRand.NextDouble() * Mathf.PI * 2.0f;
+                Vector2 pCenter = centerXZ + new Vector2(Mathf.Cos(pAngle), Mathf.Sin(pAngle)) * distFromCenter;
+
+                // Ensure pillar is at a safe distance from all doorway entrances
+                bool isNearDoorway = false;
+                foreach (Vector2 dwPoint in doorwayCenters)
+                {
+                    if (Vector2.Distance(pCenter, dwPoint) < corridorWidth * 1.2f)
+                    {
+                        isNearDoorway = true;
+                        break;
+                    }
+                }
+
+                if (isNearDoorway) continue;
+
+                float pRadius = (float)pRand.NextDouble() * (maxPillarRadius - minPillarRadius) + minPillarRadius;
+                int pPoints = Mathf.Max(4, pillarPointCount);
+
+                List<Vector3> pillarFloorVerts = new List<Vector3>();
+                List<Vector3> pillarCeilVerts = new List<Vector3>();
+
+                for (int j = 0; j < pPoints; j++)
+                {
+                    float angleJ = ((float)j / pPoints) * Mathf.PI * 2.0f;
+                    float rVar = pRadius * (1.0f + ((float)pRand.NextDouble() - 0.5f) * 0.3f);
+                    float px = pCenter.x + Mathf.Cos(angleJ) * rVar;
+                    float pz = pCenter.y + Mathf.Sin(angleJ) * rVar;
+
+                    float fy = GetFloorY(px, pz, baseFloorY);
+                    float cy = GetCeilingY(px, pz, baseFloorY + height);
+
+                    pillarFloorVerts.Add(new Vector3(px, fy, pz));
+                    pillarCeilVerts.Add(new Vector3(px, cy, pz));
+                }
+
+                // Render pillar wall quads (facing OUTWARD into room)
+                for (int j = 0; j < pPoints; j++)
+                {
+                    int nextJ = (j + 1) % pPoints;
+                    int pBaseIdx = verts.Count;
+
+                    Vector3 pf0 = pillarFloorVerts[j];
+                    Vector3 pf1 = pillarFloorVerts[nextJ];
+                    Vector3 pc1 = pillarCeilVerts[nextJ];
+                    Vector3 pc0 = pillarCeilVerts[j];
+
+                    verts.Add(pf0);
+                    verts.Add(pf1);
+                    verts.Add(pc1);
+                    verts.Add(pc0);
+
+                    uvs.Add(new Vector2(pf0.x * 0.1f, pf0.z * 0.1f));
+                    uvs.Add(new Vector2(pf1.x * 0.1f, pf1.z * 0.1f));
+                    uvs.Add(new Vector2(pc1.x * 0.1f, pc1.z * 0.1f));
+                    uvs.Add(new Vector2(pc0.x * 0.1f, pc0.z * 0.1f));
+
+                    // Render pillar wall quads (facing OUTWARD into room)
+                    if (!invertNormals)
+                    {
+                        tris.Add(pBaseIdx + 0);
+                        tris.Add(pBaseIdx + 2);
+                        tris.Add(pBaseIdx + 1);
+
+                        tris.Add(pBaseIdx + 0);
+                        tris.Add(pBaseIdx + 3);
+                        tris.Add(pBaseIdx + 2);
+                    }
+                    else
+                    {
+                        tris.Add(pBaseIdx + 0);
+                        tris.Add(pBaseIdx + 1);
+                        tris.Add(pBaseIdx + 2);
+
+                        tris.Add(pBaseIdx + 0);
+                        tris.Add(pBaseIdx + 2);
+                        tris.Add(pBaseIdx + 3);
+                    }
+                }
+            }
+        }
     }
 
     private void Add3DCorridor(CorridorData corr, List<RoomData> rooms, List<Vector2>[] roomPerimeters, float width, float height,
