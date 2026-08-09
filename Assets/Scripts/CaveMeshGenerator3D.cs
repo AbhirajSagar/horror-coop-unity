@@ -78,6 +78,31 @@ public class CaveMeshGenerator3D : MonoBehaviour
     [Range(4, 16)]
     public int pillarPointCount = 8;
 
+    [Header("Room Features — Stalactites & Stalagmites")]
+    public bool enableStalactitesAndStalagmites = true;
+    [Range(0, 15)]
+    public int maxSpikesPerRoom = 8;
+    [Range(0.5f, 5.0f)]
+    public float minSpikeHeight = 1.0f;
+    [Range(0.5f, 8.0f)]
+    public float maxSpikeHeight = 3.0f;
+    [Range(0.2f, 2.0f)]
+    public float minSpikeRadius = 0.3f;
+    [Range(0.2f, 2.5f)]
+    public float maxSpikeRadius = 1.0f;
+    [Range(3, 12)]
+    public int spikeSides = 6;
+
+    [Header("Dramatic Room Shapes & Alcoves")]
+    public bool enableVariedRoomShapes = true;
+    [Range(0f, 1f)]
+    public float alcoveChance = 0.6f;
+    [Range(1.0f, 6.0f)]
+    public float maxAlcoveDepth = 3.5f;
+    public bool enableElongatedChasms = true;
+    [Range(0f, 1f)]
+    public float chasmChance = 0.35f;
+
     [Header("Room Polygon Settings")]
     public bool enableRandomRoomPointCount = true;
     [Range(3, 32)]
@@ -310,7 +335,14 @@ public class CaveMeshGenerator3D : MonoBehaviour
     private List<Vector2> GenerateBaseRoomPerimeter(RoomData room, int points, System.Random rand, float minR, float maxR)
     {
         Vector3 center = room.center;
-        List<Vector2> perimeterXZ = new List<Vector2>();
+        List<Vector2> baseVerts = new List<Vector2>();
+
+        double shapeRoll = rand.NextDouble();
+        bool isChasm = enableElongatedChasms && (shapeRoll < chasmChance);
+        bool isStarburst = enableVariedRoomShapes && (!isChasm) && (shapeRoll < chasmChance + 0.40f);
+
+        float chasmAngle = (float)rand.NextDouble() * Mathf.PI * 2.0f;
+        float seedOffset = (float)rand.NextDouble() * 10.0f;
 
         for (int i = 0; i < points; i++)
         {
@@ -319,19 +351,64 @@ public class CaveMeshGenerator3D : MonoBehaviour
             float angle = baseAngle + jitter;
             float radius = GetRandomFloat(rand, minR, maxR);
 
+            if (isChasm)
+            {
+                // Elongated Chasm / Ravine Hall Cavern
+                float angleDiff = Mathf.Abs(Mathf.DeltaAngle(angle * Mathf.Rad2Deg, chasmAngle * Mathf.Rad2Deg) * Mathf.Deg2Rad);
+                float elongationFactor = Mathf.Lerp(2.0f, 0.6f, Mathf.Sin(angleDiff));
+                radius *= elongationFactor;
+            }
+            else if (isStarburst)
+            {
+                // Multi-Lobed Starburst Cavern
+                float harmonic = 1.0f + 0.35f * Mathf.Sin(angle * 3.0f + seedOffset) + 0.20f * Mathf.Sin(angle * 5.0f);
+                radius *= harmonic;
+            }
+
             float x = center.x + Mathf.Cos(angle) * radius;
             float z = center.z + Mathf.Sin(angle) * radius;
-            perimeterXZ.Add(new Vector2(x, z));
+            baseVerts.Add(new Vector2(x, z));
         }
 
-        perimeterXZ.Sort((a, b) =>
+        baseVerts.Sort((a, b) =>
         {
             float angleA = Mathf.Atan2(a.y - center.z, a.x - center.x);
             float angleB = Mathf.Atan2(b.y - center.z, b.x - center.x);
             return angleA.CompareTo(angleB);
         });
 
-        return perimeterXZ;
+        // Procedural Bay Alcoves & Side Niches
+        List<Vector2> finalPerimeter = new List<Vector2>();
+
+        for (int i = 0; i < baseVerts.Count; i++)
+        {
+            int nextI = (i + 1) % baseVerts.Count;
+            Vector2 p0 = baseVerts[i];
+            Vector2 p1 = baseVerts[nextI];
+
+            finalPerimeter.Add(p0);
+
+            if (enableVariedRoomShapes && maxAlcoveDepth > 0.5f && rand.NextDouble() < alcoveChance)
+            {
+                Vector2 segDir = (p1 - p0).normalized;
+                Vector2 outNorm = new Vector2(-segDir.y, segDir.x); // Radial outward normal
+                Vector2 mid = (p0 + p1) * 0.5f;
+
+                float depth = (float)rand.NextDouble() * (maxAlcoveDepth - 1.0f) + 1.0f;
+                Vector2 alcoveP = mid + outNorm * depth;
+
+                finalPerimeter.Add(alcoveP);
+            }
+        }
+
+        finalPerimeter.Sort((a, b) =>
+        {
+            float angleA = Mathf.Atan2(a.y - center.z, a.x - center.x);
+            float angleB = Mathf.Atan2(b.y - center.z, b.x - center.x);
+            return angleA.CompareTo(angleB);
+        });
+
+        return finalPerimeter;
     }
 
     private Vector2 GetRoomPerimeterIntersection(Vector2 centerXZ, List<Vector2> perimeterXZ, Vector2 targetXZ)
@@ -761,8 +838,8 @@ public class CaveMeshGenerator3D : MonoBehaviour
                     float px = pCenter.x + Mathf.Cos(angleJ) * rVar;
                     float pz = pCenter.y + Mathf.Sin(angleJ) * rVar;
 
-                    float fy = GetFloorY(px, pz, baseFloorY);
-                    float cy = GetCeilingY(px, pz, baseFloorY + height);
+                    float fy = GetExactRoomFloorY(new Vector2(px, pz), floorCenter, floorVerts, baseFloorY);
+                    float cy = GetExactRoomCeilingY(new Vector2(px, pz), ceilCenter, ceilVerts, baseFloorY + height);
 
                     pillarFloorVerts.Add(new Vector3(px, fy, pz));
                     pillarCeilVerts.Add(new Vector3(px, cy, pz));
@@ -809,6 +886,130 @@ public class CaveMeshGenerator3D : MonoBehaviour
                         tris.Add(pBaseIdx + 0);
                         tris.Add(pBaseIdx + 2);
                         tris.Add(pBaseIdx + 3);
+                    }
+                }
+            }
+        }
+
+        // 5. ROOM STALACTITES (Ceiling Spires) & STALAGMITES (Floor Spires)
+        if (enableStalactitesAndStalagmites && maxSpikesPerRoom > 0)
+        {
+            System.Random sRand = new System.Random((int)(center.x * 71f + center.z * 89f + seed.GetHashCode()));
+            int spikeCount = sRand.Next(2, maxSpikesPerRoom + 1);
+
+            for (int s = 0; s < spikeCount; s++)
+            {
+                float distFromCenter = (float)sRand.NextDouble() * (room.avgRadius * 0.70f);
+                float sAngle = (float)sRand.NextDouble() * Mathf.PI * 2.0f;
+                Vector2 sCenter = centerXZ + new Vector2(Mathf.Cos(sAngle), Mathf.Sin(sAngle)) * distFromCenter;
+
+                // Ensure spike is at a safe distance from doorway entrances
+                bool isNearDoorway = false;
+                foreach (Vector2 dwPoint in doorwayCenters)
+                {
+                    if (Vector2.Distance(sCenter, dwPoint) < corridorWidth * 1.0f)
+                    {
+                        isNearDoorway = true;
+                        break;
+                    }
+                }
+
+                if (isNearDoorway) continue;
+
+                bool isStalactite = sRand.NextDouble() > 0.5; // True = Stalactite (Ceiling), False = Stalagmite (Floor)
+                float spkHeight = (float)sRand.NextDouble() * (maxSpikeHeight - minSpikeHeight) + minSpikeHeight;
+                float spkRadius = (float)sRand.NextDouble() * (maxSpikeRadius - minSpikeRadius) + minSpikeRadius;
+                int sides = Mathf.Max(3, spikeSides);
+
+                float fyCenter = GetExactRoomFloorY(sCenter, floorCenter, floorVerts, baseFloorY);
+                float cyCenter = GetExactRoomCeilingY(sCenter, ceilCenter, ceilVerts, baseFloorY + height);
+
+                // Cap height if room is too short
+                float availableSpace = cyCenter - fyCenter;
+                spkHeight = Mathf.Min(spkHeight, availableSpace * 0.65f);
+
+                List<Vector3> baseRing = new List<Vector3>();
+                Vector3 apex;
+
+                if (isStalactite)
+                {
+                    // Ceiling spire pointing DOWN from exact ceiling mesh
+                    apex = new Vector3(sCenter.x, cyCenter - spkHeight, sCenter.y);
+
+                    for (int j = 0; j < sides; j++)
+                    {
+                        float aJ = ((float)j / sides) * Mathf.PI * 2.0f;
+                        float rVar = spkRadius * (1.0f + ((float)sRand.NextDouble() - 0.5f) * 0.2f);
+                        float bx = sCenter.x + Mathf.Cos(aJ) * rVar;
+                        float bz = sCenter.y + Mathf.Sin(aJ) * rVar;
+                        float bY = GetExactRoomCeilingY(new Vector2(bx, bz), ceilCenter, ceilVerts, baseFloorY + height);
+                        baseRing.Add(new Vector3(bx, bY, bz));
+                    }
+                }
+                else
+                {
+                    // Floor spire pointing UP from exact floor mesh
+                    apex = new Vector3(sCenter.x, fyCenter + spkHeight, sCenter.y);
+
+                    for (int j = 0; j < sides; j++)
+                    {
+                        float aJ = ((float)j / sides) * Mathf.PI * 2.0f;
+                        float rVar = spkRadius * (1.0f + ((float)sRand.NextDouble() - 0.5f) * 0.2f);
+                        float bx = sCenter.x + Mathf.Cos(aJ) * rVar;
+                        float bz = sCenter.y + Mathf.Sin(aJ) * rVar;
+                        float bY = GetExactRoomFloorY(new Vector2(bx, bz), floorCenter, floorVerts, baseFloorY);
+                        baseRing.Add(new Vector3(bx, bY, bz));
+                    }
+                }
+
+                // Render conical side triangles
+                for (int j = 0; j < sides; j++)
+                {
+                    int nextJ = (j + 1) % sides;
+                    int sBaseIdx = verts.Count;
+
+                    Vector3 b0 = baseRing[j];
+                    Vector3 b1 = baseRing[nextJ];
+
+                    verts.Add(b0);
+                    verts.Add(b1);
+                    verts.Add(apex);
+
+                    uvs.Add(new Vector2(b0.x * 0.1f, b0.z * 0.1f));
+                    uvs.Add(new Vector2(b1.x * 0.1f, b1.z * 0.1f));
+                    uvs.Add(new Vector2(apex.x * 0.1f, apex.z * 0.1f));
+
+                    if (isStalactite)
+                    {
+                        // Stalactite (pointing down): tris (0, 1, 2)
+                        if (!invertNormals)
+                        {
+                            tris.Add(sBaseIdx + 0);
+                            tris.Add(sBaseIdx + 1);
+                            tris.Add(sBaseIdx + 2);
+                        }
+                        else
+                        {
+                            tris.Add(sBaseIdx + 0);
+                            tris.Add(sBaseIdx + 2);
+                            tris.Add(sBaseIdx + 1);
+                        }
+                    }
+                    else
+                    {
+                        // Stalagmite (pointing up): tris (0, 2, 1)
+                        if (!invertNormals)
+                        {
+                            tris.Add(sBaseIdx + 0);
+                            tris.Add(sBaseIdx + 2);
+                            tris.Add(sBaseIdx + 1);
+                        }
+                        else
+                        {
+                            tris.Add(sBaseIdx + 0);
+                            tris.Add(sBaseIdx + 1);
+                            tris.Add(sBaseIdx + 2);
+                        }
                     }
                 }
             }
@@ -997,6 +1198,65 @@ public class CaveMeshGenerator3D : MonoBehaviour
         if (!enableOrganicNoise || ceilingNoiseAmount <= 0f) return baseElevation;
         float n = Mathf.PerlinNoise((x + 100f) * ceilingNoiseScale, (z + 100f) * ceilingNoiseScale);
         return baseElevation + (n - 0.5f) * ceilingNoiseAmount;
+    }
+
+    private bool GetTriangleBarycentricY(Vector2 p, Vector3 a, Vector3 b, Vector3 c, out float interpolatedY)
+    {
+        interpolatedY = 0f;
+        Vector2 v0 = new Vector2(b.x - a.x, b.z - a.z);
+        Vector2 v1 = new Vector2(c.x - a.x, c.z - a.z);
+        Vector2 v2 = p - new Vector2(a.x, a.z);
+
+        float den = v0.x * v1.y - v1.x * v0.y;
+        if (Mathf.Abs(den) < 0.00001f) return false;
+
+        float v = (v2.x * v1.y - v1.x * v2.y) / den;
+        float w = (v0.x * v2.y - v2.x * v0.y) / den;
+        float u = 1.0f - v - w;
+
+        if (u >= -0.01f && v >= -0.01f && w >= -0.01f)
+        {
+            interpolatedY = u * a.y + v * b.y + w * c.y;
+            return true;
+        }
+
+        return false;
+    }
+
+    private float GetExactRoomFloorY(Vector2 p, Vector3 floorCenter, List<Vector3> floorVerts, float fallbackElevation)
+    {
+        int count = floorVerts.Count;
+        for (int i = 0; i < count; i++)
+        {
+            int nextI = (i + 1) % count;
+            Vector3 a = floorCenter;
+            Vector3 b = floorVerts[nextI];
+            Vector3 c = floorVerts[i];
+
+            if (GetTriangleBarycentricY(p, a, b, c, out float exactY))
+            {
+                return exactY;
+            }
+        }
+        return GetFloorY(p.x, p.y, fallbackElevation);
+    }
+
+    private float GetExactRoomCeilingY(Vector2 p, Vector3 ceilCenter, List<Vector3> ceilVerts, float fallbackElevation)
+    {
+        int count = ceilVerts.Count;
+        for (int i = 0; i < count; i++)
+        {
+            int nextI = (i + 1) % count;
+            Vector3 a = ceilCenter;
+            Vector3 b = ceilVerts[i];
+            Vector3 c = ceilVerts[nextI];
+
+            if (GetTriangleBarycentricY(p, a, b, c, out float exactY))
+            {
+                return exactY;
+            }
+        }
+        return GetCeilingY(p.x, p.y, fallbackElevation);
     }
 
     private float GetRandomFloat(System.Random rand, float min, float max)
