@@ -46,6 +46,17 @@ public class CaveMeshGenerator3D : MonoBehaviour
     public bool generateWalls = true;
     public bool invertNormals = false;
 
+    [Header("Corridor & Path Settings")]
+    public bool generateCorridors = true;
+    [Range(2f, 10f)]
+    public float corridorWidth = 4.0f;
+    [Range(2f, 10f)]
+    public float corridorHeight = 3.5f;
+    [Range(1, 5)]
+    public int maxConnectionsPerRoom = 3;
+    [Range(0f, 1f)]
+    public float extraPathChance = 0.6f;
+
     [Header("Room Polygon Settings")]
     [Range(3, 32)]
     public int roomPointCount = 12;
@@ -58,13 +69,19 @@ public class CaveMeshGenerator3D : MonoBehaviour
     [Range(0f, 20f)]
     public float roomPadding = 3.0f;
 
-    private struct RoomData
+    public struct RoomData
     {
         public Vector3 center;
         public float floorElevation;
         public float wallHeight;
         public float avgRadius;
         public float maxRadius;
+    }
+
+    public struct CorridorData
+    {
+        public int roomA;
+        public int roomB;
     }
 
     private List<RoomData> lastGeneratedRooms = new List<RoomData>();
@@ -188,11 +205,28 @@ public class CaveMeshGenerator3D : MonoBehaviour
 
         lastGeneratedRooms = rooms;
 
-        // Step 2: Build 3D Room Polygons with height variations & organic terrain noise
+        // Step 1.5: Build Corridor Connections (allowing multiple paths between rooms)
+        List<CorridorData> corridors = new List<CorridorData>();
+        if (generateCorridors)
+        {
+            corridors = GenerateCorridorNetwork(rooms, pseudoRandom);
+        }
+
+        // Step 2: Build 3D Room Polygons with doorway openings where corridors attach
         for (int r = 0; r < rooms.Count; r++)
         {
-            Add3DRoomPolygon(rooms[r], roomPointCount, minRoomRadius, maxRoomRadius,
+            Add3DRoomPolygon(r, rooms, corridors, roomPointCount, minRoomRadius, maxRoomRadius,
                              pseudoRandom, allVertices, allTriangles, allUVs);
+        }
+
+        // Step 2.5: Build 3D Corridor Tunnels between rooms
+        if (generateCorridors)
+        {
+            foreach (CorridorData corr in corridors)
+            {
+                Add3DCorridor(rooms[corr.roomA], rooms[corr.roomB], corridorWidth, corridorHeight,
+                              allVertices, allTriangles, allUVs);
+            }
         }
 
         // Step 3: Flip winding order if invertNormals is checked
@@ -208,7 +242,7 @@ public class CaveMeshGenerator3D : MonoBehaviour
 
         // Step 4: Assign to Mesh
         Mesh mesh = new Mesh();
-        mesh.name = "Height-Varied 3D Rooms";
+        mesh.name = "Height-Varied 3D Rooms & Corridors";
         mesh.vertices = allVertices.ToArray();
         mesh.triangles = allTriangles.ToArray();
         mesh.uv = allUVs.ToArray();
@@ -233,15 +267,104 @@ public class CaveMeshGenerator3D : MonoBehaviour
         }
     }
 
-    private void Add3DRoomPolygon(RoomData room, int points, float minR, float maxR,
+    private List<CorridorData> GenerateCorridorNetwork(List<RoomData> rooms, System.Random rand)
+    {
+        List<CorridorData> corridors = new List<CorridorData>();
+        HashSet<(int, int)> connectedPairs = new HashSet<(int, int)>();
+
+        void AddCorridor(int a, int b)
+        {
+            int min = Mathf.Min(a, b);
+            int max = Mathf.Max(a, b);
+            if (min == max) return;
+            if (connectedPairs.Contains((min, max))) return;
+
+            connectedPairs.Add((min, max));
+            corridors.Add(new CorridorData { roomA = min, roomB = max });
+        }
+
+        // 1. Primary connections: Each room connects to its nearest neighbor (guarantees connectivity)
+        for (int i = 0; i < rooms.Count; i++)
+        {
+            int closest = -1;
+            float minDist = float.MaxValue;
+
+            for (int j = 0; j < rooms.Count; j++)
+            {
+                if (i == j) continue;
+                float dist = Vector3.Distance(rooms[i].center, rooms[j].center);
+                if (dist < minDist)
+                {
+                    minDist = dist;
+                    closest = j;
+                }
+            }
+
+            if (closest != -1)
+            {
+                AddCorridor(i, closest);
+            }
+        }
+
+        // 2. Extra connections: Connect each room to 2nd/3rd closest neighbors to create multiple paths & loops
+        for (int i = 0; i < rooms.Count; i++)
+        {
+            List<int> neighbors = new List<int>();
+            for (int j = 0; j < rooms.Count; j++)
+            {
+                if (i != j) neighbors.Add(j);
+            }
+
+            neighbors.Sort((a, b) =>
+            {
+                float distA = Vector3.Distance(rooms[i].center, rooms[a].center);
+                float distB = Vector3.Distance(rooms[i].center, rooms[b].center);
+                return distA.CompareTo(distB);
+            });
+
+            int connectionsCount = Mathf.Min(maxConnectionsPerRoom, neighbors.Count);
+            for (int n = 0; n < connectionsCount; n++)
+            {
+                int targetRoom = neighbors[n];
+                if (n == 0 || (float)rand.NextDouble() <= extraPathChance)
+                {
+                    AddCorridor(i, targetRoom);
+                }
+            }
+        }
+
+        return corridors;
+    }
+
+    private void Add3DRoomPolygon(int roomIndex, List<RoomData> rooms, List<CorridorData> corridors,
+                                  int points, float minR, float maxR,
                                   System.Random rand,
                                   List<Vector3> verts, List<int> tris, List<Vector2> uvs)
     {
+        RoomData room = rooms[roomIndex];
         Vector3 center = room.center;
+        Vector2 centerXZ = new Vector2(center.x, center.z);
         float baseFloorY = room.floorElevation;
         float height = room.wallHeight;
 
         List<Vector2> perimeterXZ = new List<Vector2>();
+
+        // Find all doorway points for corridors connected to this room
+        List<Vector2> doorwayCenters = new List<Vector2>();
+        if (generateCorridors && corridors != null)
+        {
+            foreach (CorridorData corr in corridors)
+            {
+                if (corr.roomA == roomIndex || corr.roomB == roomIndex)
+                {
+                    int otherIdx = (corr.roomA == roomIndex) ? corr.roomB : corr.roomA;
+                    Vector2 otherXZ = new Vector2(rooms[otherIdx].center.x, rooms[otherIdx].center.z);
+                    Vector2 dirXZ = (otherXZ - centerXZ).normalized;
+                    Vector2 doorwayPoint = centerXZ + dirXZ * (room.maxRadius * 0.85f);
+                    doorwayCenters.Add(doorwayPoint);
+                }
+            }
+        }
 
         for (int i = 0; i < points; i++)
         {
@@ -255,6 +378,17 @@ public class CaveMeshGenerator3D : MonoBehaviour
             float z = center.z + Mathf.Sin(angle) * radius;
 
             perimeterXZ.Add(new Vector2(x, z));
+        }
+
+        // Add doorway endpoints so room wall segments split cleanly at doorways
+        foreach (Vector2 dwPoint in doorwayCenters)
+        {
+            Vector2 dir = (dwPoint - centerXZ).normalized;
+            Vector2 right = new Vector2(-dir.y, dir.x);
+            float halfW = corridorWidth * 0.5f;
+
+            perimeterXZ.Add(dwPoint - right * halfW);
+            perimeterXZ.Add(dwPoint + right * halfW);
         }
 
         // Sort perimeter points by polar angle (Counter-Clockwise)
@@ -332,11 +466,28 @@ public class CaveMeshGenerator3D : MonoBehaviour
             }
         }
 
-        // 3. ROOM PERIMETER WALLS (Fully enclosed walls around each room)
+        // 3. ROOM PERIMETER WALLS (Only open the exact doorway segment!)
         if (generateWalls)
         {
             for (int i = 0; i < perimeterXZ.Count; i++)
             {
+                Vector2 p0 = perimeterXZ[i];
+                Vector2 p1 = perimeterXZ[(i + 1) % perimeterXZ.Count];
+                Vector2 wallMid = (p0 + p1) * 0.5f;
+
+                // Check if this specific sub-segment is inside an open doorway
+                bool isDoorwaySegment = false;
+                foreach (Vector2 dwPoint in doorwayCenters)
+                {
+                    if (Vector2.Distance(wallMid, dwPoint) < corridorWidth * 0.52f)
+                    {
+                        isDoorwaySegment = true;
+                        break;
+                    }
+                }
+
+                if (isDoorwaySegment) continue; // Skip ONLY the doorway opening segment!
+
                 Vector3 p0_floor = floorVerts[i];
                 Vector3 p1_floor = floorVerts[(i + 1) % floorVerts.Count];
 
@@ -355,7 +506,6 @@ public class CaveMeshGenerator3D : MonoBehaviour
                 uvs.Add(new Vector2(p1_ceil.x * 0.1f, p1_ceil.y * 0.1f));
                 uvs.Add(new Vector2(p0_ceil.x * 0.1f, p0_ceil.y * 0.1f));
 
-                // Quad facing INWARD into room interior
                 tris.Add(wallBaseIdx + 0);
                 tris.Add(wallBaseIdx + 1);
                 tris.Add(wallBaseIdx + 2);
@@ -365,6 +515,158 @@ public class CaveMeshGenerator3D : MonoBehaviour
                 tris.Add(wallBaseIdx + 3);
             }
         }
+    }
+
+    private void Add3DCorridor(RoomData roomA, RoomData roomB, float width, float height,
+                               List<Vector3> verts, List<int> tris, List<Vector2> uvs)
+    {
+        Vector2 cA = new Vector2(roomA.center.x, roomA.center.z);
+        Vector2 cB = new Vector2(roomB.center.x, roomB.center.z);
+
+        Vector2 dirXZ = (cB - cA).normalized;
+        if (dirXZ == Vector2.zero) return;
+
+        Vector2 rightXZ = new Vector2(-dirXZ.y, dirXZ.x);
+        float halfW = width * 0.5f;
+
+        // Start and End at the room boundaries so the passage doesn't extrude inside rooms
+        Vector2 startXZ = cA + dirXZ * (roomA.maxRadius * 0.85f);
+        Vector2 endXZ = cB - dirXZ * (roomB.maxRadius * 0.85f);
+
+        float dist = Vector2.Distance(startXZ, endXZ);
+        if (dist <= 0.5f) return;
+
+        int steps = Mathf.Max(2, Mathf.CeilToInt(dist / 2.0f));
+
+        List<Vector3> leftFloor = new List<Vector3>();
+        List<Vector3> rightFloor = new List<Vector3>();
+        List<Vector3> leftCeil = new List<Vector3>();
+        List<Vector3> rightCeil = new List<Vector3>();
+
+        for (int i = 0; i <= steps; i++)
+        {
+            float t = (float)i / steps;
+            Vector2 posXZ = Vector2.Lerp(startXZ, endXZ, t);
+            float elev = Mathf.Lerp(roomA.floorElevation, roomB.floorElevation, t);
+
+            Vector2 lxz = posXZ - rightXZ * halfW;
+            Vector2 rxz = posXZ + rightXZ * halfW;
+
+            float fyL = GetFloorY(lxz.x, lxz.y, elev);
+            float fyR = GetFloorY(rxz.x, rxz.y, elev);
+
+            float cyL = GetCeilingY(lxz.x, lxz.y, elev + height);
+            float cyR = GetCeilingY(rxz.x, rxz.y, elev + height);
+
+            leftFloor.Add(new Vector3(lxz.x, fyL, lxz.y));
+            rightFloor.Add(new Vector3(rxz.x, fyR, rxz.y));
+
+            leftCeil.Add(new Vector3(lxz.x, cyL, lxz.y));
+            rightCeil.Add(new Vector3(rxz.x, cyR, rxz.y));
+        }
+
+        for (int i = 0; i < steps; i++)
+        {
+            // 1. Pipe Floor (Facing UP into passage)
+            if (generateFloor)
+            {
+                int baseIdx = verts.Count;
+                verts.Add(leftFloor[i]);
+                verts.Add(rightFloor[i]);
+                verts.Add(rightFloor[i + 1]);
+                verts.Add(leftFloor[i + 1]);
+
+                uvs.Add(new Vector2(leftFloor[i].x * 0.1f, leftFloor[i].z * 0.1f));
+                uvs.Add(new Vector2(rightFloor[i].x * 0.1f, rightFloor[i].z * 0.1f));
+                uvs.Add(new Vector2(rightFloor[i + 1].x * 0.1f, rightFloor[i + 1].z * 0.1f));
+                uvs.Add(new Vector2(leftFloor[i + 1].x * 0.1f, leftFloor[i + 1].z * 0.1f));
+
+                tris.Add(baseIdx + 0);
+                tris.Add(baseIdx + 1);
+                tris.Add(baseIdx + 2);
+
+                tris.Add(baseIdx + 0);
+                tris.Add(baseIdx + 2);
+                tris.Add(baseIdx + 3);
+            }
+
+            // 2. Pipe Ceiling (Facing DOWN into passage)
+            if (generateCeiling)
+            {
+                int baseIdx = verts.Count;
+                verts.Add(leftCeil[i]);
+                verts.Add(leftCeil[i + 1]);
+                verts.Add(rightCeil[i + 1]);
+                verts.Add(rightCeil[i]);
+
+                uvs.Add(new Vector2(leftCeil[i].x * 0.1f, leftCeil[i].z * 0.1f));
+                uvs.Add(new Vector2(leftCeil[i + 1].x * 0.1f, leftCeil[i + 1].z * 0.1f));
+                uvs.Add(new Vector2(rightCeil[i + 1].x * 0.1f, rightCeil[i + 1].z * 0.1f));
+                uvs.Add(new Vector2(rightCeil[i].x * 0.1f, rightCeil[i].z * 0.1f));
+
+                tris.Add(baseIdx + 0);
+                tris.Add(baseIdx + 1);
+                tris.Add(baseIdx + 2);
+
+                tris.Add(baseIdx + 0);
+                tris.Add(baseIdx + 2);
+                tris.Add(baseIdx + 3);
+            }
+
+            // 3. Pipe Enclosing Side Walls (Left & Right Walls along passage)
+            if (generateWalls)
+            {
+                // Left Side Wall of Pipe (Facing INWARD into passage)
+                int lBaseIdx = verts.Count;
+                verts.Add(leftFloor[i]);
+                verts.Add(leftFloor[i + 1]);
+                verts.Add(leftCeil[i + 1]);
+                verts.Add(leftCeil[i]);
+
+                uvs.Add(new Vector2(leftFloor[i].x * 0.1f, leftFloor[i].y * 0.1f));
+                uvs.Add(new Vector2(leftFloor[i + 1].x * 0.1f, leftFloor[i + 1].y * 0.1f));
+                uvs.Add(new Vector2(leftCeil[i + 1].x * 0.1f, leftCeil[i + 1].y * 0.1f));
+                uvs.Add(new Vector2(leftCeil[i].x * 0.1f, leftCeil[i].y * 0.1f));
+
+                tris.Add(lBaseIdx + 0);
+                tris.Add(lBaseIdx + 1);
+                tris.Add(lBaseIdx + 2);
+
+                tris.Add(lBaseIdx + 0);
+                tris.Add(lBaseIdx + 2);
+                tris.Add(lBaseIdx + 3);
+
+                // Right Side Wall of Pipe (Facing INWARD into passage)
+                int rBaseIdx = verts.Count;
+                verts.Add(rightFloor[i + 1]);
+                verts.Add(rightFloor[i]);
+                verts.Add(rightCeil[i]);
+                verts.Add(rightCeil[i + 1]);
+
+                uvs.Add(new Vector2(rightFloor[i + 1].x * 0.1f, rightFloor[i + 1].y * 0.1f));
+                uvs.Add(new Vector2(rightFloor[i].x * 0.1f, rightFloor[i].y * 0.1f));
+                uvs.Add(new Vector2(rightCeil[i].x * 0.1f, rightCeil[i].y * 0.1f));
+                uvs.Add(new Vector2(rightCeil[i + 1].x * 0.1f, rightCeil[i + 1].y * 0.1f));
+
+                tris.Add(rBaseIdx + 0);
+                tris.Add(rBaseIdx + 1);
+                tris.Add(rBaseIdx + 2);
+
+                tris.Add(rBaseIdx + 0);
+                tris.Add(rBaseIdx + 2);
+                tris.Add(rBaseIdx + 3);
+            }
+        }
+    }
+
+    private float DistancePointToSegmentXZ(Vector2 p, Vector2 a, Vector2 b)
+    {
+        Vector2 ab = b - a;
+        float sqrLen = ab.sqrMagnitude;
+        if (sqrLen == 0f) return Vector2.Distance(p, a);
+        float t = Mathf.Clamp01(Vector2.Dot(p - a, ab) / sqrLen);
+        Vector2 projection = a + t * ab;
+        return Vector2.Distance(p, projection);
     }
 
     private float GetFloorY(float x, float z, float baseElevation)
