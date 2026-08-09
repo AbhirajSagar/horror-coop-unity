@@ -10,6 +10,11 @@ public class Movement : MonoBehaviour
     [SerializeField] private float LookSensitivity = 1.0f;
     [SerializeField] private bool LockCursor = true;
 
+    [Header("CROUCH SETTINGS")]
+    [SerializeField] private float CrouchYScale = 0.5f;
+    [SerializeField] private float CrouchSpeedMultiplier = 0.6f;
+    [SerializeField] private float CrouchTransitionSpeed = 10f;
+
     [Header("GROUND CHECK")]
     [SerializeField] private float GroundCheckDistance = 1.2f;
     [SerializeField] private LayerMask GroundMask = ~0;
@@ -21,8 +26,11 @@ public class Movement : MonoBehaviour
     [Header("INPUT")]
     [SerializeField] private InputActionReference MoveActionRef;
     [SerializeField] private InputActionReference LookActionRef;
+    [SerializeField] private InputActionReference CrouchActionRef;
 
     private float cameraPitch = 0f;
+    private float originalYScale = 1f;
+    private bool isCrouching = false;
 
     private void Awake()
     {
@@ -45,6 +53,8 @@ public class Movement : MonoBehaviour
 
     private void Start()
     {
+        originalYScale = transform.localScale.y;
+
         if (LockCursor)
         {
             Cursor.lockState = CursorLockMode.Locked;
@@ -53,11 +63,13 @@ public class Movement : MonoBehaviour
 
         MoveActionRef.action.Enable();
         LookActionRef.action.Enable();
+        CrouchActionRef.action.Enable();
     }
 
     private void Update()
     {
         HandleCameraLook();
+        HandleCrouch();
     }
 
     private void FixedUpdate()
@@ -74,6 +86,16 @@ public class Movement : MonoBehaviour
     private Vector2 GetLookInput()
     {
         return LookActionRef.action.ReadValue<Vector2>();
+    }
+
+    private void HandleCrouch()
+    {
+        isCrouching = CrouchActionRef.action.IsPressed();
+
+        float targetYScale = isCrouching ? originalYScale * CrouchYScale : originalYScale;
+        Vector3 targetScale = new Vector3(transform.localScale.x, targetYScale, transform.localScale.z);
+
+        transform.localScale = Vector3.Lerp(transform.localScale, targetScale, Time.deltaTime * CrouchTransitionSpeed);
     }
 
     private void HandleCameraLook()
@@ -95,8 +117,9 @@ public class Movement : MonoBehaviour
         Vector2 moveInput = GetMoveInput();
         Vector3 rawMoveDir = (transform.forward * moveInput.y + transform.right * moveInput.x).normalized;
 
-        // Check if player is grounded
-        bool isGrounded = Physics.Raycast(transform.position, Vector3.down, out RaycastHit hit, GroundCheckDistance, GroundMask);
+        // Dynamic ground check distance scaling with Y scale
+        float currentGroundCheckDist = GroundCheckDistance * (transform.localScale.y / originalYScale);
+        bool isGrounded = Physics.Raycast(transform.position, Vector3.down, out RaycastHit hit, currentGroundCheckDist, GroundMask);
 
         Vector3 moveDir = rawMoveDir;
         if (isGrounded)
@@ -105,7 +128,8 @@ public class Movement : MonoBehaviour
             moveDir = Vector3.ProjectOnPlane(rawMoveDir, hit.normal).normalized;
         }
 
-        Vector3 targetVelocity = moveDir * MovementSpeed;
+        float speed = isCrouching ? MovementSpeed * CrouchSpeedMultiplier : MovementSpeed;
+        Vector3 targetVelocity = moveDir * speed;
         Vector3 currentVelocity = PlayerRb.linearVelocity;
 
         if (isGrounded)
