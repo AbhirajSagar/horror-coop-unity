@@ -40,20 +40,6 @@ public class CaveMeshGenerator3D : MonoBehaviour
     [Range(0f, 5f)]
     public float ceilingNoiseAmount = 1.5f;
 
-    [Header("Organic Wall Character & Rock Face Noise")]
-    public bool enableWallNoise = true;
-    [Range(0.01f, 0.3f)]
-    public float wallNoiseScale = 0.08f;
-    [Range(0f, 3f)]
-    public float wallNoiseAmount = 1.0f;
-    [Range(1, 4)]
-    public int wallSubdivisions = 2;
-
-    [Header("3D Wall Thickness & Solid Shell")]
-    public bool enableWallThickness = true;
-    [Range(0.1f, 5.0f)]
-    public float wallThickness = 1.0f;
-
     [Header("Structure Toggles")]
     public bool generateFloor = true;
     public bool generateCeiling = true;
@@ -80,6 +66,17 @@ public class CaveMeshGenerator3D : MonoBehaviour
     public bool enableBranchingCorridors = true;
     [Range(0f, 1f)]
     public float branchChance = 0.5f;
+
+    [Header("Room Features — Pillars & Columns")]
+    public bool enableRoomPillars = true;
+    [Range(0, 5)]
+    public int maxPillarsPerRoom = 2;
+    [Range(0.5f, 3.0f)]
+    public float minPillarRadius = 0.8f;
+    [Range(0.5f, 4.0f)]
+    public float maxPillarRadius = 2.0f;
+    [Range(4, 16)]
+    public int pillarPointCount = 8;
 
     [Header("Room Polygon Settings")]
     public bool enableRandomRoomPointCount = true;
@@ -567,55 +564,23 @@ public class CaveMeshGenerator3D : MonoBehaviour
             return angleA.CompareTo(angleB);
         });
 
-        // Build 3D Floor & Ceiling positions & Wall Vertical Grid with continuous shared vertex displacement
+        // Build 3D Floor & Ceiling positions with organic terrain noise
         List<Vector3> floorVerts = new List<Vector3>();
         List<Vector3> ceilVerts = new List<Vector3>();
 
         Vector3 floorCenter = new Vector3(center.x, GetFloorY(center.x, center.z, baseFloorY), center.z);
         Vector3 ceilCenter = new Vector3(center.x, GetCeilingY(center.x, center.z, baseFloorY + height), center.z);
 
-        int subdivs = Mathf.Max(1, wallSubdivisions);
-        int pCount = perimeterXZ.Count;
-        Vector3[,] wallGrid = new Vector3[pCount, subdivs + 1];
-        Vector3[,] outerWallGrid = new Vector3[pCount, subdivs + 1];
-
-        float thick = (enableWallThickness && wallThickness > 0.01f) ? wallThickness : 0f;
-
-        for (int i = 0; i < pCount; i++)
+        for (int i = 0; i < perimeterXZ.Count; i++)
         {
             float x = perimeterXZ[i].x;
             float z = perimeterXZ[i].y;
-            Vector2 pXZ = perimeterXZ[i];
-            Vector2 radialDir2D = (pXZ - centerXZ).normalized;
-            Vector3 radialDir = new Vector3(radialDir2D.x, 0f, radialDir2D.y);
 
             float fy = GetFloorY(x, z, baseFloorY);
             float cy = GetCeilingY(x, z, baseFloorY + height);
 
-            Vector3 floorP = new Vector3(x, fy, z);
-            Vector3 ceilP = new Vector3(x, cy, z);
-
-            floorVerts.Add(floorP);
-            ceilVerts.Add(ceilP);
-
-            // Compute continuous height grid for inner and outer room perimeter walls
-            for (int s = 0; s <= subdivs; s++)
-            {
-                float tHeight = (float)s / subdivs;
-                Vector3 rawPos = Vector3.Lerp(floorP, ceilP, tHeight);
-
-                float heightEnv = Mathf.Sin(tHeight * Mathf.PI);
-                float noise = 0f;
-                if (enableWallNoise && wallNoiseAmount > 0f)
-                {
-                    float n = (Mathf.PerlinNoise(x * wallNoiseScale + 200f, z * wallNoiseScale + tHeight * 3f + 300f) - 0.5f) * 2.0f;
-                    noise = n * wallNoiseAmount * heightEnv;
-                }
-
-                Vector3 innerP = rawPos + radialDir * noise;
-                wallGrid[i, s] = innerP;
-                outerWallGrid[i, s] = innerP + radialDir * thick;
-            }
+            floorVerts.Add(new Vector3(x, fy, z));
+            ceilVerts.Add(new Vector3(x, cy, z));
         }
 
         // 1. ROOM FLOOR MESH (Facing UP +Y into room)
@@ -666,12 +631,12 @@ public class CaveMeshGenerator3D : MonoBehaviour
             }
         }
 
-        // 3. ROOM PERIMETER WALLS (With 3D Solid Wall Shell & Header Walls)
+        // 3. ROOM PERIMETER WALLS (With Double-Sided Header Walls above Doorways)
         if (generateWalls)
         {
-            for (int i = 0; i < pCount; i++)
+            for (int i = 0; i < perimeterXZ.Count; i++)
             {
-                int nextI = (i + 1) % pCount;
+                int nextI = (i + 1) % perimeterXZ.Count;
                 Vector2 p0 = perimeterXZ[i];
                 Vector2 p1 = perimeterXZ[nextI];
                 Vector2 wallMid = (p0 + p1) * 0.5f;
@@ -687,6 +652,12 @@ public class CaveMeshGenerator3D : MonoBehaviour
                     }
                 }
 
+                Vector3 p0_floor = floorVerts[i];
+                Vector3 p1_floor = floorVerts[nextI];
+
+                Vector3 p0_ceil = ceilVerts[i];
+                Vector3 p1_ceil = ceilVerts[nextI];
+
                 if (isDoorwaySegment && height > corridorHeight + 0.1f)
                 {
                     // Draw Double-Sided Header Wall Quad strictly ABOVE passage roof (from corridorHeight to height)
@@ -696,20 +667,17 @@ public class CaveMeshGenerator3D : MonoBehaviour
                     Vector3 p0_passCeil = new Vector3(p0.x, passageCeilY0, p0.y);
                     Vector3 p1_passCeil = new Vector3(p1.x, passageCeilY1, p1.y);
 
-                    Vector3 p0_roomCeil = wallGrid[i, subdivs];
-                    Vector3 p1_roomCeil = wallGrid[nextI, subdivs];
-
                     int headerBaseIdx = verts.Count;
 
                     verts.Add(p0_passCeil);
                     verts.Add(p1_passCeil);
-                    verts.Add(p1_roomCeil);
-                    verts.Add(p0_roomCeil);
+                    verts.Add(p1_ceil);
+                    verts.Add(p0_ceil);
 
                     uvs.Add(new Vector2(p0_passCeil.x * 0.1f, p0_passCeil.y * 0.1f));
                     uvs.Add(new Vector2(p1_passCeil.x * 0.1f, p1_passCeil.y * 0.1f));
-                    uvs.Add(new Vector2(p1_roomCeil.x * 0.1f, p1_roomCeil.y * 0.1f));
-                    uvs.Add(new Vector2(p0_roomCeil.x * 0.1f, p0_roomCeil.y * 0.1f));
+                    uvs.Add(new Vector2(p1_ceil.x * 0.1f, p1_ceil.y * 0.1f));
+                    uvs.Add(new Vector2(p0_ceil.x * 0.1f, p0_ceil.y * 0.1f));
 
                     // Front Face (Facing Into Room)
                     tris.Add(headerBaseIdx + 0);
@@ -731,78 +699,26 @@ public class CaveMeshGenerator3D : MonoBehaviour
                 }
                 else if (!isDoorwaySegment)
                 {
-                    // Full Room 3D Solid Wall Grid (Inner Face + Outer Face + Ceiling Rim Cap)
-                    for (int s = 0; s < subdivs; s++)
-                    {
-                        // 1. Inner Wall Face (Facing Into Room)
-                        int baseIdx = verts.Count;
+                    // Full Room Wall Quad from floor to room ceiling
+                    int wallBaseIdx = verts.Count;
 
-                        verts.Add(wallGrid[i, s]);
-                        verts.Add(wallGrid[nextI, s]);
-                        verts.Add(wallGrid[nextI, s + 1]);
-                        verts.Add(wallGrid[i, s + 1]);
+                    verts.Add(p0_floor);
+                    verts.Add(p1_floor);
+                    verts.Add(p1_ceil);
+                    verts.Add(p0_ceil);
 
-                        uvs.Add(new Vector2(wallGrid[i, s].x * 0.1f, wallGrid[i, s].y * 0.1f));
-                        uvs.Add(new Vector2(wallGrid[nextI, s].x * 0.1f, wallGrid[nextI, s].y * 0.1f));
-                        uvs.Add(new Vector2(wallGrid[nextI, s + 1].x * 0.1f, wallGrid[nextI, s + 1].y * 0.1f));
-                        uvs.Add(new Vector2(wallGrid[i, s + 1].x * 0.1f, wallGrid[i, s + 1].y * 0.1f));
+                    uvs.Add(new Vector2(p0_floor.x * 0.1f, p0_floor.y * 0.1f));
+                    uvs.Add(new Vector2(p1_floor.x * 0.1f, p1_floor.y * 0.1f));
+                    uvs.Add(new Vector2(p1_ceil.x * 0.1f, p1_ceil.y * 0.1f));
+                    uvs.Add(new Vector2(p0_ceil.x * 0.1f, p0_ceil.y * 0.1f));
 
-                        tris.Add(baseIdx + 0);
-                        tris.Add(baseIdx + 1);
-                        tris.Add(baseIdx + 2);
+                    tris.Add(wallBaseIdx + 0);
+                    tris.Add(wallBaseIdx + 1);
+                    tris.Add(wallBaseIdx + 2);
 
-                        tris.Add(baseIdx + 0);
-                        tris.Add(baseIdx + 2);
-                        tris.Add(baseIdx + 3);
-
-                        // 2. Outer Wall Face (Facing Outward into rock shell)
-                        if (thick > 0f)
-                        {
-                            int outIdx = verts.Count;
-
-                            verts.Add(outerWallGrid[nextI, s]);
-                            verts.Add(outerWallGrid[i, s]);
-                            verts.Add(outerWallGrid[i, s + 1]);
-                            verts.Add(outerWallGrid[nextI, s + 1]);
-
-                            uvs.Add(new Vector2(outerWallGrid[nextI, s].x * 0.1f, outerWallGrid[nextI, s].y * 0.1f));
-                            uvs.Add(new Vector2(outerWallGrid[i, s].x * 0.1f, outerWallGrid[i, s].y * 0.1f));
-                            uvs.Add(new Vector2(outerWallGrid[i, s + 1].x * 0.1f, outerWallGrid[i, s + 1].y * 0.1f));
-                            uvs.Add(new Vector2(outerWallGrid[nextI, s + 1].x * 0.1f, outerWallGrid[nextI, s + 1].y * 0.1f));
-
-                            tris.Add(outIdx + 0);
-                            tris.Add(outIdx + 1);
-                            tris.Add(outIdx + 2);
-
-                            tris.Add(outIdx + 0);
-                            tris.Add(outIdx + 2);
-                            tris.Add(outIdx + 3);
-                        }
-                    }
-
-                    // 3. Top Wall Rim Cap at Ceiling Height
-                    if (thick > 0f)
-                    {
-                        int capIdx = verts.Count;
-
-                        verts.Add(wallGrid[i, subdivs]);
-                        verts.Add(outerWallGrid[i, subdivs]);
-                        verts.Add(outerWallGrid[nextI, subdivs]);
-                        verts.Add(wallGrid[nextI, subdivs]);
-
-                        uvs.Add(new Vector2(wallGrid[i, subdivs].x * 0.1f, wallGrid[i, subdivs].z * 0.1f));
-                        uvs.Add(new Vector2(outerWallGrid[i, subdivs].x * 0.1f, outerWallGrid[i, subdivs].z * 0.1f));
-                        uvs.Add(new Vector2(outerWallGrid[nextI, subdivs].x * 0.1f, outerWallGrid[nextI, subdivs].z * 0.1f));
-                        uvs.Add(new Vector2(wallGrid[nextI, subdivs].x * 0.1f, wallGrid[nextI, subdivs].z * 0.1f));
-
-                        tris.Add(capIdx + 0);
-                        tris.Add(capIdx + 1);
-                        tris.Add(capIdx + 2);
-
-                        tris.Add(capIdx + 0);
-                        tris.Add(capIdx + 2);
-                        tris.Add(capIdx + 3);
-                    }
+                    tris.Add(wallBaseIdx + 0);
+                    tris.Add(wallBaseIdx + 2);
+                    tris.Add(wallBaseIdx + 3);
                 }
             }
         }
@@ -823,13 +739,9 @@ public class CaveMeshGenerator3D : MonoBehaviour
         Vector2 rightXZ = new Vector2(-dirXZ.y, dirXZ.x);
         float halfW = width * 0.5f;
 
-        // Intersection points on room perimeter walls
-        Vector2 rawStartXZ = GetRoomPerimeterIntersection(cA, roomPerimeters[corr.roomA], cB);
-        Vector2 rawEndXZ = GetRoomPerimeterIntersection(cB, roomPerimeters[corr.roomB], cA);
-
-        // Extend passage slightly (1.0 unit) into rooms to create an overlapping watertight seal
-        Vector2 startXZ = rawStartXZ - dirXZ * 1.0f;
-        Vector2 endXZ = rawEndXZ + dirXZ * 1.0f;
+        // Exact intersection points on room perimeter walls (0.0m extension for 1-to-1 vertex snapping)
+        Vector2 startXZ = GetRoomPerimeterIntersection(cA, roomPerimeters[corr.roomA], cB);
+        Vector2 endXZ = GetRoomPerimeterIntersection(cB, roomPerimeters[corr.roomB], cA);
 
         float dist = Vector2.Distance(startXZ, endXZ);
         if (dist <= 0.2f) return;
@@ -876,56 +788,6 @@ public class CaveMeshGenerator3D : MonoBehaviour
 
             leftCeil.Add(new Vector3(lxz.x, cyL, lxz.y));
             rightCeil.Add(new Vector3(rxz.x, cyR, rxz.y));
-        }
-
-        // Precompute continuous inner and outer wall grids for left and right corridor walls
-        int subdivs = Mathf.Max(1, wallSubdivisions);
-        Vector3[,] lWallGrid = new Vector3[steps + 1, subdivs + 1];
-        Vector3[,] rWallGrid = new Vector3[steps + 1, subdivs + 1];
-        Vector3[,] lOuterWallGrid = new Vector3[steps + 1, subdivs + 1];
-        Vector3[,] rOuterWallGrid = new Vector3[steps + 1, subdivs + 1];
-
-        Vector3 lNormOut = new Vector3(-rightXZ.x, 0f, -rightXZ.y); // Outward left into rock
-        Vector3 rNormOut = new Vector3(rightXZ.x, 0f, rightXZ.y);   // Outward right into rock
-
-        float cThick = (enableWallThickness && wallThickness > 0.01f) ? wallThickness : 0f;
-
-        for (int i = 0; i <= steps; i++)
-        {
-            Vector3 lf = leftFloor[i];
-            Vector3 lc = leftCeil[i];
-
-            Vector3 rf = rightFloor[i];
-            Vector3 rc = rightCeil[i];
-
-            for (int s = 0; s <= subdivs; s++)
-            {
-                float tHeight = (float)s / subdivs;
-                float heightEnv = Mathf.Sin(tHeight * Mathf.PI);
-
-                Vector3 rawL = Vector3.Lerp(lf, lc, tHeight);
-                Vector3 rawR = Vector3.Lerp(rf, rc, tHeight);
-
-                float lNoise = 0f;
-                float rNoise = 0f;
-
-                if (enableWallNoise && wallNoiseAmount > 0f)
-                {
-                    float nL = (Mathf.PerlinNoise(rawL.x * wallNoiseScale + 400f, rawL.z * wallNoiseScale + tHeight * 3f + 500f) - 0.5f) * 2.0f;
-                    float nR = (Mathf.PerlinNoise(rawR.x * wallNoiseScale + 700f, rawR.z * wallNoiseScale + tHeight * 3f + 800f) - 0.5f) * 2.0f;
-
-                    lNoise = nL * wallNoiseAmount * heightEnv;
-                    rNoise = nR * wallNoiseAmount * heightEnv;
-                }
-
-                Vector3 inL = rawL + lNormOut * lNoise;
-                lWallGrid[i, s] = inL;
-                lOuterWallGrid[i, s] = inL + lNormOut * cThick;
-
-                Vector3 inR = rawR + rNormOut * rNoise;
-                rWallGrid[i, s] = inR;
-                rOuterWallGrid[i, s] = inR + rNormOut * cThick;
-            }
         }
 
         for (int i = 0; i < steps; i++)
@@ -976,106 +838,48 @@ public class CaveMeshGenerator3D : MonoBehaviour
                 tris.Add(baseIdx + 3);
             }
 
-            // 3. Pipe Enclosing Side Walls (Continuous Shared Inner & Outer Wall Grids)
+            // 3. Pipe Enclosing Side Walls (Left & Right Walls along passage)
             if (generateWalls)
             {
-                // Left Wall Grid (Inner Face + Outer Face)
-                for (int s = 0; s < subdivs; s++)
-                {
-                    // Inner Left Wall
-                    int lIdx = verts.Count;
+                // Left Side Wall of Pipe (Facing INWARD into passage)
+                int lBaseIdx = verts.Count;
+                verts.Add(leftFloor[i]);
+                verts.Add(leftFloor[i + 1]);
+                verts.Add(leftCeil[i + 1]);
+                verts.Add(leftCeil[i]);
 
-                    verts.Add(lWallGrid[i, s]);
-                    verts.Add(lWallGrid[i + 1, s]);
-                    verts.Add(lWallGrid[i + 1, s + 1]);
-                    verts.Add(lWallGrid[i, s + 1]);
+                uvs.Add(new Vector2(leftFloor[i].x * 0.1f, leftFloor[i].y * 0.1f));
+                uvs.Add(new Vector2(leftFloor[i + 1].x * 0.1f, leftFloor[i + 1].y * 0.1f));
+                uvs.Add(new Vector2(leftCeil[i + 1].x * 0.1f, leftCeil[i + 1].y * 0.1f));
+                uvs.Add(new Vector2(leftCeil[i].x * 0.1f, leftCeil[i].y * 0.1f));
 
-                    uvs.Add(new Vector2(lWallGrid[i, s].x * 0.1f, lWallGrid[i, s].y * 0.1f));
-                    uvs.Add(new Vector2(lWallGrid[i + 1, s].x * 0.1f, lWallGrid[i + 1, s].y * 0.1f));
-                    uvs.Add(new Vector2(lWallGrid[i + 1, s + 1].x * 0.1f, lWallGrid[i + 1, s + 1].y * 0.1f));
-                    uvs.Add(new Vector2(lWallGrid[i, s + 1].x * 0.1f, lWallGrid[i, s + 1].y * 0.1f));
+                tris.Add(lBaseIdx + 0);
+                tris.Add(lBaseIdx + 1);
+                tris.Add(lBaseIdx + 2);
 
-                    tris.Add(lIdx + 0);
-                    tris.Add(lIdx + 1);
-                    tris.Add(lIdx + 2);
+                tris.Add(lBaseIdx + 0);
+                tris.Add(lBaseIdx + 2);
+                tris.Add(lBaseIdx + 3);
 
-                    tris.Add(lIdx + 0);
-                    tris.Add(lIdx + 2);
-                    tris.Add(lIdx + 3);
+                // Right Side Wall of Pipe (Facing INWARD into passage)
+                int rBaseIdx = verts.Count;
+                verts.Add(rightFloor[i + 1]);
+                verts.Add(rightFloor[i]);
+                verts.Add(rightCeil[i]);
+                verts.Add(rightCeil[i + 1]);
 
-                    // Outer Left Wall
-                    if (cThick > 0f)
-                    {
-                        int lOutIdx = verts.Count;
+                uvs.Add(new Vector2(rightFloor[i + 1].x * 0.1f, rightFloor[i + 1].y * 0.1f));
+                uvs.Add(new Vector2(rightFloor[i].x * 0.1f, rightFloor[i].y * 0.1f));
+                uvs.Add(new Vector2(rightCeil[i].x * 0.1f, rightCeil[i].y * 0.1f));
+                uvs.Add(new Vector2(rightCeil[i + 1].x * 0.1f, rightCeil[i + 1].y * 0.1f));
 
-                        verts.Add(lOuterWallGrid[i + 1, s]);
-                        verts.Add(lOuterWallGrid[i, s]);
-                        verts.Add(lOuterWallGrid[i, s + 1]);
-                        verts.Add(lOuterWallGrid[i + 1, s + 1]);
+                tris.Add(rBaseIdx + 0);
+                tris.Add(rBaseIdx + 1);
+                tris.Add(rBaseIdx + 2);
 
-                        uvs.Add(new Vector2(lOuterWallGrid[i + 1, s].x * 0.1f, lOuterWallGrid[i + 1, s].y * 0.1f));
-                        uvs.Add(new Vector2(lOuterWallGrid[i, s].x * 0.1f, lOuterWallGrid[i, s].y * 0.1f));
-                        uvs.Add(new Vector2(lOuterWallGrid[i, s + 1].x * 0.1f, lOuterWallGrid[i, s + 1].y * 0.1f));
-                        uvs.Add(new Vector2(lOuterWallGrid[i + 1, s + 1].x * 0.1f, lOuterWallGrid[i + 1, s + 1].y * 0.1f));
-
-                        tris.Add(lOutIdx + 0);
-                        tris.Add(lOutIdx + 1);
-                        tris.Add(lOutIdx + 2);
-
-                        tris.Add(lOutIdx + 0);
-                        tris.Add(lOutIdx + 2);
-                        tris.Add(lOutIdx + 3);
-                    }
-                }
-
-                // Right Wall Grid (Inner Face + Outer Face)
-                for (int s = 0; s < subdivs; s++)
-                {
-                    // Inner Right Wall
-                    int rIdx = verts.Count;
-
-                    verts.Add(rWallGrid[i + 1, s]);
-                    verts.Add(rWallGrid[i, s]);
-                    verts.Add(rWallGrid[i, s + 1]);
-                    verts.Add(rWallGrid[i + 1, s + 1]);
-
-                    uvs.Add(new Vector2(rWallGrid[i + 1, s].x * 0.1f, rWallGrid[i + 1, s].y * 0.1f));
-                    uvs.Add(new Vector2(rWallGrid[i, s].x * 0.1f, rWallGrid[i, s].y * 0.1f));
-                    uvs.Add(new Vector2(rWallGrid[i, s + 1].x * 0.1f, rWallGrid[i, s + 1].y * 0.1f));
-                    uvs.Add(new Vector2(rWallGrid[i + 1, s + 1].x * 0.1f, rWallGrid[i + 1, s + 1].y * 0.1f));
-
-                    tris.Add(rIdx + 0);
-                    tris.Add(rIdx + 1);
-                    tris.Add(rIdx + 2);
-
-                    tris.Add(rIdx + 0);
-                    tris.Add(rIdx + 2);
-                    tris.Add(rIdx + 3);
-
-                    // Outer Right Wall
-                    if (cThick > 0f)
-                    {
-                        int rOutIdx = verts.Count;
-
-                        verts.Add(rOuterWallGrid[i, s]);
-                        verts.Add(rOuterWallGrid[i + 1, s]);
-                        verts.Add(rOuterWallGrid[i + 1, s + 1]);
-                        verts.Add(rOuterWallGrid[i, s + 1]);
-
-                        uvs.Add(new Vector2(rOuterWallGrid[i, s].x * 0.1f, rOuterWallGrid[i, s].y * 0.1f));
-                        uvs.Add(new Vector2(rOuterWallGrid[i + 1, s].x * 0.1f, rOuterWallGrid[i + 1, s].y * 0.1f));
-                        uvs.Add(new Vector2(rOuterWallGrid[i + 1, s + 1].x * 0.1f, rOuterWallGrid[i + 1, s + 1].y * 0.1f));
-                        uvs.Add(new Vector2(rOuterWallGrid[i, s + 1].x * 0.1f, rOuterWallGrid[i, s + 1].y * 0.1f));
-
-                        tris.Add(rOutIdx + 0);
-                        tris.Add(rOutIdx + 1);
-                        tris.Add(rOutIdx + 2);
-
-                        tris.Add(rOutIdx + 0);
-                        tris.Add(rOutIdx + 2);
-                        tris.Add(rOutIdx + 3);
-                    }
-                }
+                tris.Add(rBaseIdx + 0);
+                tris.Add(rBaseIdx + 2);
+                tris.Add(rBaseIdx + 3);
             }
         }
     }
