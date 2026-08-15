@@ -1,8 +1,10 @@
 using System;
+using NUnit.Framework;
+using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
-public class Movement : MonoBehaviour
+public class Movement : NetworkBehaviour
 {
     [Header("SETTINGS")]
     [SerializeField] private float MovementSpeed = 6.0f;
@@ -14,6 +16,9 @@ public class Movement : MonoBehaviour
     [SerializeField] private float CrouchYScale = 0.5f;
     [SerializeField] private float CrouchSpeedMultiplier = 0.6f;
     [SerializeField] private float CrouchTransitionSpeed = 10f;
+
+    [Header("ANIMATIONS")]
+    [SerializeField] private Animator PlayerAnimator;
 
     [Header("GROUND CHECK")]
     [SerializeField] private float GroundCheckDistance = 1.2f;
@@ -28,26 +33,32 @@ public class Movement : MonoBehaviour
     [SerializeField] private InputActionReference LookActionRef;
     [SerializeField] private InputActionReference CrouchActionRef;
 
+    [Header("AUDIO")]
+    [SerializeField] private AudioClip[] FootstepSounds;
+    [SerializeField] private AudioSource AudioPlayer;
+
     private float cameraPitch = 0f;
     private float originalYScale = 1f;
     private bool isCrouching = false;
+    private readonly int XHash = Animator.StringToHash("x");
+    private readonly int YHash = Animator.StringToHash("y");
+    
 
-    private void Awake()
+    public override void OnNetworkSpawn()
     {
-        // Freeze Rigidbody rotation so physics doesn't tilt or tip the player
-        PlayerRb.freezeRotation = true;
+        base.OnNetworkSpawn();
 
-        // Apply friction-less material to prevent capsule wall-sticking and edge popping
-        Collider col = GetComponent<Collider>();
-        if (col != null && col.sharedMaterial == null)
+        if (!IsOwner)
         {
-            PhysicsMaterial noFriction = new PhysicsMaterial("PlayerNoFriction")
+            if (CameraTransform != null)
             {
-                dynamicFriction = 0f,
-                staticFriction = 0f,
-                frictionCombine = PhysicsMaterialCombine.Minimum
-            };
-            col.material = noFriction;
+                CameraTransform.gameObject.SetActive(false);
+            }
+            AudioListener listener = GetComponentInChildren<AudioListener>();
+            if (listener != null)
+            {
+                listener.enabled = false;
+            }
         }
     }
 
@@ -55,41 +66,58 @@ public class Movement : MonoBehaviour
     {
         originalYScale = transform.localScale.y;
 
+        if (!IsOwner && IsSpawned)
+        {
+            if (CameraTransform != null) CameraTransform.gameObject.SetActive(false);
+            return;
+        }
+
         if (LockCursor)
         {
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
         }
 
-        MoveActionRef.action.Enable();
-        LookActionRef.action.Enable();
-        CrouchActionRef.action.Enable();
+        if (MoveActionRef != null && MoveActionRef.action != null) MoveActionRef.action.Enable();
+        if (LookActionRef != null && LookActionRef.action != null) LookActionRef.action.Enable();
+        if (CrouchActionRef != null && CrouchActionRef.action != null) CrouchActionRef.action.Enable();
     }
 
     private void Update()
     {
+        if (IsSpawned && !IsOwner) return;
         HandleCameraLook();
         HandleCrouch();
     }
 
+    private void HandleAnimations(Vector2 inputMovement)
+    {
+        PlayerAnimator.SetFloat(XHash, inputMovement.x);
+        PlayerAnimator.SetFloat(YHash, inputMovement.y);
+    }
+
     private void FixedUpdate()
     {
+        if (IsSpawned && !IsOwner) return;
         HandleMovement();
     }
 
     private Vector2 GetMoveInput()
     {
+        if (MoveActionRef == null || MoveActionRef.action == null) return Vector2.zero;
         Vector2 input = MoveActionRef.action.ReadValue<Vector2>();
         return Vector2.ClampMagnitude(input, 1f);
     }
 
     private Vector2 GetLookInput()
     {
+        if (LookActionRef == null || LookActionRef.action == null) return Vector2.zero;
         return LookActionRef.action.ReadValue<Vector2>();
     }
 
     private void HandleCrouch()
     {
+        if (CrouchActionRef == null || CrouchActionRef.action == null) return;
         isCrouching = CrouchActionRef.action.IsPressed();
 
         float targetYScale = isCrouching ? originalYScale * CrouchYScale : originalYScale;
@@ -100,13 +128,12 @@ public class Movement : MonoBehaviour
 
     private void HandleCameraLook()
     {
+        if (CameraTransform == null) return;
         Vector2 lookInput = GetLookInput();
 
-        // Horizontal rotation around Y axis
         float yaw = lookInput.x * RotationSpeed * LookSensitivity;
         transform.Rotate(Vector3.up * yaw);
 
-        // Vertical pitch around X axis for camera
         cameraPitch -= lookInput.y * RotationSpeed * LookSensitivity;
         cameraPitch = Mathf.Clamp(cameraPitch, -85f, 85f);
         CameraTransform.localRotation = Quaternion.Euler(cameraPitch, 0f, 0f);
@@ -115,18 +142,14 @@ public class Movement : MonoBehaviour
     private void HandleMovement()
     {
         Vector2 moveInput = GetMoveInput();
+        HandleAnimations(moveInput);
         Vector3 rawMoveDir = (transform.forward * moveInput.y + transform.right * moveInput.x).normalized;
 
-        // Dynamic ground check distance scaling with Y scale
         float currentGroundCheckDist = GroundCheckDistance * (transform.localScale.y / originalYScale);
         bool isGrounded = Physics.Raycast(transform.position, Vector3.down, out RaycastHit hit, currentGroundCheckDist, GroundMask);
 
         Vector3 moveDir = rawMoveDir;
-        if (isGrounded)
-        {
-            // Project movement along ground slope normal to prevent step launching
-            moveDir = Vector3.ProjectOnPlane(rawMoveDir, hit.normal).normalized;
-        }
+        if (isGrounded) moveDir = Vector3.ProjectOnPlane(rawMoveDir, hit.normal).normalized;
 
         float speed = isCrouching ? MovementSpeed * CrouchSpeedMultiplier : MovementSpeed;
         Vector3 targetVelocity = moveDir * speed;
@@ -134,20 +157,21 @@ public class Movement : MonoBehaviour
 
         if (isGrounded)
         {
-            // Clamp upward Y velocity spike caused by hitting bumps while grounded
             float currentY = currentVelocity.y;
-            if (currentY > 0f)
-            {
-                currentY = 0f;
-            }
-
+            if (currentY > 0f) currentY = 0f;
             PlayerRb.linearVelocity = new Vector3(targetVelocity.x, currentY, targetVelocity.z);
         }
         else
         {
-            // Preserve gravity Y velocity in air
             Vector3 velocityChange = new Vector3(targetVelocity.x - currentVelocity.x, 0f, targetVelocity.z - currentVelocity.z);
             PlayerRb.AddForce(velocityChange, ForceMode.VelocityChange);
         }
+    }
+
+    //Called from animation event when feet touches the floor
+    public void PlayAudioStepSound()
+    {
+        AudioPlayer.pitch = UnityEngine.Random.Range(0.8f, 1.2f);
+        AudioPlayer.PlayOneShot(FootstepSounds[UnityEngine.Random.Range(0, FootstepSounds.Length)]);
     }
 }

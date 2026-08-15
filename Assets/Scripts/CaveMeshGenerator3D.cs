@@ -1,11 +1,15 @@
 using UnityEngine;
 using System.Collections.Generic;
+using Unity.Netcode;
+using Unity.Collections;
 
 [ExecuteAlways]
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer), typeof(MeshCollider))]
-public class CaveMeshGenerator3D : MonoBehaviour
+[RequireComponent(typeof(NetworkObject))]
+public class CaveMeshGenerator3D : NetworkBehaviour
 {
     [Header("Network Settings")]
+    public bool generateOnAwake = true;
     [Range(2, 20)]
     public int roomCount = 6;
     public string seed = "DefaultSeed";
@@ -134,12 +138,123 @@ public class CaveMeshGenerator3D : MonoBehaviour
         public int roomB;
     }
 
+    public static CaveMeshGenerator3D Instance { get; private set; }
+
     private List<RoomData> lastGeneratedRooms = new List<RoomData>();
 
-    void Start()
+    private NetworkVariable<FixedString64Bytes> syncedSeed = new NetworkVariable<FixedString64Bytes>(
+        default,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
+
+    private void Awake()
     {
-        if (Application.isPlaying)
+        if (Instance != null && Instance != this)
         {
+            // Keep reference to active instance
+        }
+        Instance = this;
+
+        if (Application.isPlaying && generateOnAwake)
+        {
+            if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsClient)
+            {
+                seed = System.Guid.NewGuid().ToString().Substring(0, 8);
+                Generate3DNetwork();
+            }
+        }
+    }
+
+    private void OnEnable()
+    {
+        if (Instance == null)
+        {
+            Instance = this;
+        }
+    }
+
+    private void OnDestroy()
+    {
+        if (Instance == this)
+        {
+            Instance = null;
+        }
+    }
+
+    private void Start()
+    {
+        if (Application.isPlaying && !generateOnAwake)
+        {
+            Generate3DNetwork();
+        }
+
+        SetupNetworkManagerIntegration();
+    }
+
+    private void Update()
+    {
+        if (Application.isPlaying && NetworkManager.Singleton != null)
+        {
+            if (NetworkManager.Singleton.ConnectionApprovalCallback == null)
+            {
+                SetupNetworkManagerIntegration();
+            }
+        }
+    }
+
+    private void SetupNetworkManagerIntegration()
+    {
+        if (NetworkManager.Singleton != null)
+        {
+            NetworkManager.Singleton.NetworkConfig.ConnectionApproval = true;
+            NetworkManager.Singleton.ConnectionApprovalCallback = ConnectionApprovalCheck;
+        }
+    }
+
+    private void ConnectionApprovalCheck(NetworkManager.ConnectionApprovalRequest request, NetworkManager.ConnectionApprovalResponse response)
+    {
+        response.Approved = true;
+        response.CreatePlayerObject = true;
+        
+        Vector3 spawnPos = GetSpawnPositionForPlayer(request.ClientNetworkId);
+        response.Position = spawnPos;
+        response.Rotation = Quaternion.identity;
+    }
+
+    public override void OnNetworkSpawn()
+    {
+        base.OnNetworkSpawn();
+
+        if (IsServer)
+        {
+            syncedSeed.Value = new FixedString64Bytes(seed);
+        }
+        else
+        {
+            syncedSeed.OnValueChanged += OnSeedNetworkChanged;
+            string serverSeed = syncedSeed.Value.ToString();
+            if (!string.IsNullOrEmpty(serverSeed))
+            {
+                ApplyNetworkSeed(serverSeed);
+            }
+        }
+    }
+
+    private void OnSeedNetworkChanged(FixedString64Bytes oldSeed, FixedString64Bytes newSeed)
+    {
+        if (!IsServer)
+        {
+            ApplyNetworkSeed(newSeed.ToString());
+        }
+    }
+
+    private void ApplyNetworkSeed(string newSeed)
+    {
+        if (string.IsNullOrEmpty(newSeed)) return;
+        if (seed != newSeed)
+        {
+            seed = newSeed;
             Generate3DNetwork();
         }
     }
@@ -586,8 +701,10 @@ public class CaveMeshGenerator3D : MonoBehaviour
         float baseFloorY = room.floorElevation;
         float height = room.wallHeight;
 
-        // Find exact doorway intersection points on the room's perimeter
+        // Find exact doorway frames and endpoints using the exact corridor rightXZ direction
         List<Vector2> doorwayCenters = new List<Vector2>();
+        List<(Vector2 dwL, Vector2 dwR)> doorwayPairs = new List<(Vector2, Vector2)>();
+
         if (generateCorridors && corridors != null)
         {
             foreach (CorridorData corr in corridors)
@@ -595,10 +712,21 @@ public class CaveMeshGenerator3D : MonoBehaviour
                 if (corr.roomA == roomIndex || corr.roomB == roomIndex)
                 {
                     int otherIdx = (corr.roomA == roomIndex) ? corr.roomB : corr.roomA;
-                    Vector2 otherXZ = new Vector2(rooms[otherIdx].center.x, rooms[otherIdx].center.z);
+                    Vector2 cA = (corr.roomA == roomIndex) ? centerXZ : new Vector2(rooms[otherIdx].center.x, rooms[otherIdx].center.z);
+                    Vector2 cB = (corr.roomA == roomIndex) ? new Vector2(rooms[otherIdx].center.x, rooms[otherIdx].center.z) : centerXZ;
 
-                    Vector2 doorwayPoint = GetRoomPerimeterIntersection(centerXZ, basePerimeter, otherXZ);
+                    Vector2 dirXZ = (cB - cA).normalized;
+                    if (dirXZ == Vector2.zero) continue;
+
+                    Vector2 rightXZ = new Vector2(-dirXZ.y, dirXZ.x);
+                    float halfW = corridorWidth * 0.5f;
+
+                    Vector2 doorwayPoint = GetRoomPerimeterIntersection(centerXZ, basePerimeter, (corr.roomA == roomIndex) ? cB : cA);
                     doorwayCenters.Add(doorwayPoint);
+
+                    Vector2 dwL = doorwayPoint - rightXZ * halfW;
+                    Vector2 dwR = doorwayPoint + rightXZ * halfW;
+                    doorwayPairs.Add((dwL, dwR));
                 }
             }
         }
@@ -608,12 +736,22 @@ public class CaveMeshGenerator3D : MonoBehaviour
         foreach (Vector2 p in basePerimeter)
         {
             bool insideDoorway = false;
-            foreach (Vector2 dwPoint in doorwayCenters)
+            foreach (var pair in doorwayPairs)
             {
-                if (Vector2.Distance(p, dwPoint) < corridorWidth * 0.55f)
+                // Projection test: Check if vertex p falls along the doorway opening span (dwL -> dwR)
+                Vector2 seg = pair.dwR - pair.dwL;
+                float sqrLen = seg.sqrMagnitude;
+                if (sqrLen > 0.001f)
                 {
-                    insideDoorway = true;
-                    break;
+                    float t = Vector2.Dot(p - pair.dwL, seg) / sqrLen;
+                    Vector2 proj = pair.dwL + Mathf.Clamp01(t) * seg;
+                    float distToSeg = Vector2.Distance(p, proj);
+
+                    if (t > -0.1f && t < 1.1f && distToSeg < corridorWidth * 0.7f)
+                    {
+                        insideDoorway = true;
+                        break;
+                    }
                 }
             }
             if (!insideDoorway)
@@ -622,15 +760,11 @@ public class CaveMeshGenerator3D : MonoBehaviour
             }
         }
 
-        // Add doorway endpoints so room wall segments split cleanly at doorways
-        foreach (Vector2 dwPoint in doorwayCenters)
+        // Add doorway left & right endpoints for every attached corridor
+        foreach (var pair in doorwayPairs)
         {
-            Vector2 dir = (dwPoint - centerXZ).normalized;
-            Vector2 right = new Vector2(-dir.y, dir.x);
-            float halfW = corridorWidth * 0.5f;
-
-            perimeterXZ.Add(dwPoint - right * halfW);
-            perimeterXZ.Add(dwPoint + right * halfW);
+            perimeterXZ.Add(pair.dwL);
+            perimeterXZ.Add(pair.dwR);
         }
 
         // Sort perimeter points by polar angle (Counter-Clockwise)
@@ -716,13 +850,13 @@ public class CaveMeshGenerator3D : MonoBehaviour
                 int nextI = (i + 1) % perimeterXZ.Count;
                 Vector2 p0 = perimeterXZ[i];
                 Vector2 p1 = perimeterXZ[nextI];
-                Vector2 wallMid = (p0 + p1) * 0.5f;
 
-                // Check if this sub-segment is inside an open doorway
+                // Check if this segment matches a doorway opening pair (dwL -> dwR or dwR -> dwL)
                 bool isDoorwaySegment = false;
-                foreach (Vector2 dwPoint in doorwayCenters)
+                foreach (var pair in doorwayPairs)
                 {
-                    if (Vector2.Distance(wallMid, dwPoint) < corridorWidth * 0.52f)
+                    if ((Vector2.Distance(p0, pair.dwL) < 0.2f && Vector2.Distance(p1, pair.dwR) < 0.2f) ||
+                        (Vector2.Distance(p0, pair.dwR) < 0.2f && Vector2.Distance(p1, pair.dwL) < 0.2f))
                     {
                         isDoorwaySegment = true;
                         break;
@@ -735,44 +869,96 @@ public class CaveMeshGenerator3D : MonoBehaviour
                 Vector3 p0_ceil = ceilVerts[i];
                 Vector3 p1_ceil = ceilVerts[nextI];
 
-                if (isDoorwaySegment && height > corridorHeight + 0.1f)
+                if (isDoorwaySegment)
                 {
-                    // Draw Double-Sided Header Wall Quad strictly ABOVE passage roof (from corridorHeight to height)
-                    float passageCeilY0 = GetCeilingY(p0.x, p0.y, baseFloorY + corridorHeight);
-                    float passageCeilY1 = GetCeilingY(p1.x, p1.y, baseFloorY + corridorHeight);
+                    float passCeilY0 = GetCeilingY(p0.x, p0.y, baseFloorY + corridorHeight);
+                    float passCeilY1 = GetCeilingY(p1.x, p1.y, baseFloorY + corridorHeight);
 
-                    Vector3 p0_passCeil = new Vector3(p0.x, passageCeilY0, p0.y);
-                    Vector3 p1_passCeil = new Vector3(p1.x, passageCeilY1, p1.y);
+                    Vector3 p0_passCeil = new Vector3(p0.x, passCeilY0, p0.y);
+                    Vector3 p1_passCeil = new Vector3(p1.x, passCeilY1, p1.y);
 
-                    int headerBaseIdx = verts.Count;
+                    Vector3 p0_roomCeil = p0_ceil;
+                    Vector3 p1_roomCeil = p1_ceil;
 
+                    float yMin0 = Mathf.Min(p0_passCeil.y, p0_roomCeil.y);
+                    float yMax0 = Mathf.Max(p0_passCeil.y, p0_roomCeil.y);
+                    float yMin1 = Mathf.Min(p1_passCeil.y, p1_roomCeil.y);
+                    float yMax1 = Mathf.Max(p1_passCeil.y, p1_roomCeil.y);
+
+                    if (yMax0 - yMin0 > 0.02f || yMax1 - yMin1 > 0.02f)
+                    {
+                        Vector3 bL = new Vector3(p0.x, yMin0, p0.y);
+                        Vector3 bR = new Vector3(p1.x, yMin1, p1.y);
+                        Vector3 tR = new Vector3(p1.x, yMax1, p1.y);
+                        Vector3 tL = new Vector3(p0.x, yMax0, p0.y);
+
+                        // 1. Room-Facing Header Wall Quad (Facing INTO Room)
+                        int rIdx = verts.Count;
+                        verts.Add(bL);
+                        verts.Add(bR);
+                        verts.Add(tR);
+                        verts.Add(tL);
+
+                        uvs.Add(new Vector2(bL.x * 0.1f, bL.y * 0.1f));
+                        uvs.Add(new Vector2(bR.x * 0.1f, bR.y * 0.1f));
+                        uvs.Add(new Vector2(tR.x * 0.1f, tR.y * 0.1f));
+                        uvs.Add(new Vector2(tL.x * 0.1f, tL.y * 0.1f));
+
+                        tris.Add(rIdx + 0);
+                        tris.Add(rIdx + 1);
+                        tris.Add(rIdx + 2);
+
+                        tris.Add(rIdx + 0);
+                        tris.Add(rIdx + 2);
+                        tris.Add(rIdx + 3);
+
+                        // 2. Passage-Facing Header Wall Quad (Facing INTO Passage - SEPARATE VERTICES TO PREVENT ZERO NORMAL CANCELLATION!)
+                        int pIdx = verts.Count;
+                        verts.Add(bR);
+                        verts.Add(bL);
+                        verts.Add(tL);
+                        verts.Add(tR);
+
+                        uvs.Add(new Vector2(bR.x * 0.1f, bR.y * 0.1f));
+                        uvs.Add(new Vector2(bL.x * 0.1f, bL.y * 0.1f));
+                        uvs.Add(new Vector2(tL.x * 0.1f, tL.y * 0.1f));
+                        uvs.Add(new Vector2(tR.x * 0.1f, tR.y * 0.1f));
+
+                        tris.Add(pIdx + 0);
+                        tris.Add(pIdx + 1);
+                        tris.Add(pIdx + 2);
+
+                        tris.Add(pIdx + 0);
+                        tris.Add(pIdx + 2);
+                        tris.Add(pIdx + 3);
+                    }
+
+                    // 3. Doorway Archway Underside Lintel / Soffit Quad (Facing DOWN into walkway)
+                    Vector2 segDir = (p1 - p0).normalized;
+                    Vector2 outNorm = new Vector2(-segDir.y, segDir.x);
+
+                    Vector3 p0_ext = p0_passCeil + new Vector3(outNorm.x, 0f, outNorm.y) * 0.6f;
+                    Vector3 p1_ext = p1_passCeil + new Vector3(outNorm.x, 0f, outNorm.y) * 0.6f;
+
+                    int sIdx = verts.Count;
                     verts.Add(p0_passCeil);
                     verts.Add(p1_passCeil);
-                    verts.Add(p1_ceil);
-                    verts.Add(p0_ceil);
+                    verts.Add(p1_ext);
+                    verts.Add(p0_ext);
 
-                    uvs.Add(new Vector2(p0_passCeil.x * 0.1f, p0_passCeil.y * 0.1f));
-                    uvs.Add(new Vector2(p1_passCeil.x * 0.1f, p1_passCeil.y * 0.1f));
-                    uvs.Add(new Vector2(p1_ceil.x * 0.1f, p1_ceil.y * 0.1f));
-                    uvs.Add(new Vector2(p0_ceil.x * 0.1f, p0_ceil.y * 0.1f));
+                    uvs.Add(new Vector2(p0_passCeil.x * 0.1f, p0_passCeil.z * 0.1f));
+                    uvs.Add(new Vector2(p1_passCeil.x * 0.1f, p1_passCeil.z * 0.1f));
+                    uvs.Add(new Vector2(p1_ext.x * 0.1f, p1_ext.z * 0.1f));
+                    uvs.Add(new Vector2(p0_ext.x * 0.1f, p0_ext.z * 0.1f));
 
-                    // Front Face (Facing Into Room)
-                    tris.Add(headerBaseIdx + 0);
-                    tris.Add(headerBaseIdx + 1);
-                    tris.Add(headerBaseIdx + 2);
+                    // Underside Facing Down
+                    tris.Add(sIdx + 0);
+                    tris.Add(sIdx + 1);
+                    tris.Add(sIdx + 2);
 
-                    tris.Add(headerBaseIdx + 0);
-                    tris.Add(headerBaseIdx + 2);
-                    tris.Add(headerBaseIdx + 3);
-
-                    // Back Face (Facing Into Passage)
-                    tris.Add(headerBaseIdx + 0);
-                    tris.Add(headerBaseIdx + 2);
-                    tris.Add(headerBaseIdx + 1);
-
-                    tris.Add(headerBaseIdx + 0);
-                    tris.Add(headerBaseIdx + 3);
-                    tris.Add(headerBaseIdx + 2);
+                    tris.Add(sIdx + 0);
+                    tris.Add(sIdx + 2);
+                    tris.Add(sIdx + 3);
                 }
                 else if (!isDoorwaySegment)
                 {
@@ -1276,6 +1462,61 @@ public class CaveMeshGenerator3D : MonoBehaviour
         Generate3DNetwork();
     }
 
+    public Vector3 GetSpawnPosition(int roomIndex = 0)
+    {
+        if (lastGeneratedRooms == null || lastGeneratedRooms.Count == 0)
+        {
+            if (Application.isPlaying)
+            {
+                Generate3DNetwork();
+            }
+        }
+
+        if (lastGeneratedRooms == null || lastGeneratedRooms.Count == 0)
+        {
+            return transform.position;
+        }
+
+        int clampedIndex = Mathf.Clamp(roomIndex, 0, lastGeneratedRooms.Count - 1);
+        RoomData selectedRoom = lastGeneratedRooms[clampedIndex];
+
+        float floorY = GetFloorY(selectedRoom.center.x, selectedRoom.center.z, selectedRoom.floorElevation);
+        return new Vector3(selectedRoom.center.x, floorY + playerSpawnYOffset, selectedRoom.center.z);
+    }
+
+    public Vector3 GetRandomRoomSpawnPosition()
+    {
+        if (lastGeneratedRooms == null || lastGeneratedRooms.Count == 0) return GetSpawnPosition(0);
+        int randomRoomIndex = Random.Range(0, lastGeneratedRooms.Count);
+        return GetSpawnPosition(randomRoomIndex);
+    }
+
+    public Vector3 GetSpawnPositionForPlayer(ulong clientId)
+    {
+        if (lastGeneratedRooms == null || lastGeneratedRooms.Count == 0) return GetSpawnPosition(0);
+        int roomIndex = (int)(clientId % (ulong)lastGeneratedRooms.Count);
+        return GetSpawnPosition(roomIndex);
+    }
+
+    public void PlacePlayer(Transform targetTransform, int roomIndex = -1)
+    {
+        if (targetTransform == null) return;
+
+        Vector3 spawnPosition = (roomIndex < 0) ? GetRandomRoomSpawnPosition() : GetSpawnPosition(roomIndex);
+
+        targetTransform.position = spawnPosition;
+
+        Rigidbody rb = targetTransform.GetComponent<Rigidbody>();
+        if (rb != null)
+        {
+            rb.position = spawnPosition;
+            rb.linearVelocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+        }
+
+        Physics.SyncTransforms();
+    }
+
     public void PlacePlayerInRandomRoom()
     {
         PlacePlayerInRandomRoom(lastGeneratedRooms);
@@ -1285,42 +1526,28 @@ public class CaveMeshGenerator3D : MonoBehaviour
     {
         if (rooms == null || rooms.Count == 0) return;
 
+        Movement[] movements = FindObjectsOfType<Movement>();
+        if (movements != null && movements.Length > 0)
+        {
+            foreach (Movement m in movements)
+            {
+                PlacePlayer(m.transform, (int)(m.OwnerClientId % (ulong)rooms.Count));
+            }
+            return;
+        }
+
         if (playerTransform == null)
         {
-            Movement movement = FindObjectOfType<Movement>();
-            if (movement != null)
+            GameObject playerObj = GameObject.FindWithTag("Player");
+            if (playerObj != null)
             {
-                playerTransform = movement.transform;
-            }
-            else
-            {
-                GameObject playerObj = GameObject.FindWithTag("Player");
-                if (playerObj != null)
-                {
-                    playerTransform = playerObj.transform;
-                }
+                playerTransform = playerObj.transform;
             }
         }
 
         if (playerTransform != null)
         {
-            int randomRoomIndex = Random.Range(0, rooms.Count);
-            RoomData selectedRoom = rooms[randomRoomIndex];
-
-            float floorY = GetFloorY(selectedRoom.center.x, selectedRoom.center.z, selectedRoom.floorElevation);
-            Vector3 spawnPosition = new Vector3(selectedRoom.center.x, floorY + playerSpawnYOffset, selectedRoom.center.z);
-
-            playerTransform.position = spawnPosition;
-
-            Rigidbody rb = playerTransform.GetComponent<Rigidbody>();
-            if (rb != null)
-            {
-                rb.position = spawnPosition;
-                rb.linearVelocity = Vector3.zero;
-                rb.angularVelocity = Vector3.zero;
-            }
-
-            Physics.SyncTransforms();
+            PlacePlayer(playerTransform, -1);
         }
     }
 }
