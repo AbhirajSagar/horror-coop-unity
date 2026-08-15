@@ -33,33 +33,34 @@ public class Movement : NetworkBehaviour
     [SerializeField] private InputActionReference LookActionRef;
     [SerializeField] private InputActionReference CrouchActionRef;
 
-    [Header("AUDIO")]
+    [Header("FOOTSTEPS")]
     [SerializeField] private AudioClip[] FootstepSounds;
+    [SerializeField] private float FootstepDistance = 1.8f;
+
+    [Header("AUDIO")]
     [SerializeField] private AudioSource AudioPlayer;
+    [SerializeField] private AudioListener Listener;
 
     private float cameraPitch = 0f;
     private float originalYScale = 1f;
     private bool isCrouching = false;
     private readonly int XHash = Animator.StringToHash("x");
     private readonly int YHash = Animator.StringToHash("y");
+    private Vector3 lastFootstepPosition;
     
 
     public override void OnNetworkSpawn()
     {
         base.OnNetworkSpawn();
 
-        if (!IsOwner)
+        if (IsOwner)
         {
-            if (CameraTransform != null)
-            {
-                CameraTransform.gameObject.SetActive(false);
-            }
-            AudioListener listener = GetComponentInChildren<AudioListener>();
-            if (listener != null)
-            {
-                listener.enabled = false;
-            }
+            lastFootstepPosition = transform.position;
+            return;
         }
+
+        CameraTransform.gameObject.SetActive(false);
+        Listener.enabled = false;
     }
 
     private void Start()
@@ -157,21 +158,29 @@ public class Movement : NetworkBehaviour
 
         if (isGrounded)
         {
-            float currentY = currentVelocity.y;
-            if (currentY > 0f) currentY = 0f;
+            float currentY = currentVelocity.y > 0f ? 0f : currentVelocity.y;
             PlayerRb.linearVelocity = new Vector3(targetVelocity.x, currentY, targetVelocity.z);
         }
         else
         {
-            Vector3 velocityChange = new Vector3(targetVelocity.x - currentVelocity.x, 0f, targetVelocity.z - currentVelocity.z);
+            Vector3 velocityChange = new(targetVelocity.x - currentVelocity.x, 0f, targetVelocity.z - currentVelocity.z);
             PlayerRb.AddForce(velocityChange, ForceMode.VelocityChange);
+        }
+
+        if (isGrounded && moveInput.sqrMagnitude > 0.01f)
+        {
+            float distance = Vector3.Distance(transform.position, lastFootstepPosition);
+
+            if (distance >= FootstepDistance)
+            {
+                PlayAudioStepSound();
+                lastFootstepPosition = transform.position;
+            }
         }
     }
 
-    //Called from animation event when feet touches the floor
     public void PlayAudioStepSound()
     {
-        AudioPlayer.pitch = UnityEngine.Random.Range(0.8f, 1.2f);
         AudioPlayer.PlayOneShot(FootstepSounds[UnityEngine.Random.Range(0, FootstepSounds.Length)]);
     }
 }

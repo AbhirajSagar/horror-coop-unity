@@ -114,7 +114,7 @@ MonoBehaviour:
   Ownership: 1
   AlwaysReplicateAsRoot: 0
   SynchronizeTransform: 1
-  m_InScenePlaced: 1
+  m_InScenePlaced: 0
   ActiveSceneSynchronization: 0
   SceneMigrationSynchronization: 0
   SpawnWithObservers: 1
@@ -154,11 +154,9 @@ MonoBehaviour:
   CrouchActionRef: {fileID: 7040659881675835329, guid: 052faaac586de48259a63d0c4782560b, type: 3}
   FootstepSounds:
   - {fileID: 8300000, guid: 1cc2201f2fd132448a17d469b4732190, type: 3}
-  - {fileID: 8300000, guid: 5da9164a1afe9b149bbb9c9e45e1ab32, type: 3}
-  - {fileID: 8300000, guid: 316492d01b1549d4890f472bd1281cb9, type: 3}
-  - {fileID: 8300000, guid: 29aeacf46d9788e4a9ad7e4c350c5635, type: 3}
-  - {fileID: 8300000, guid: 7ea268eef5c8b2542b3b211726c56eff, type: 3}
+  FootstepDistance: 1.8
   AudioPlayer: {fileID: 8698757075387961264}
+  Listener: {fileID: 1086032521680635827}
 --- !u!54 &8512673639720656571
 Rigidbody:
   m_ObjectHideFlags: 0
