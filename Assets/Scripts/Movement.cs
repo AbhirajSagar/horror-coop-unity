@@ -37,6 +37,14 @@ public class Movement : NetworkBehaviour
     [SerializeField] private AudioClip[] FootstepSounds;
     [SerializeField] private float FootstepDistance = 1.8f;
 
+    [Header("HEADBOB SETTINGS")]
+    [SerializeField] private bool EnableHeadbob = true;
+    [SerializeField] private float BobFrequency = 10f;
+    [SerializeField] private float BobHorizontalAmount = 0.025f;
+    [SerializeField] private float BobVerticalAmount = 0.035f;
+    [SerializeField] private float BobCrouchMultiplier = 0.6f;
+    [SerializeField] private float BobSmoothSpeed = 10f;
+
     [Header("AUDIO")]
     [SerializeField] private AudioSource AudioPlayer;
     [SerializeField] private AudioListener Listener;
@@ -44,6 +52,9 @@ public class Movement : NetworkBehaviour
     private float cameraPitch = 0f;
     private float originalYScale = 1f;
     private bool isCrouching = false;
+    private bool isGrounded = false;
+    private Vector3 defaultCameraLocalPos;
+    private float bobTimer = 0f;
     private readonly int XHash = Animator.StringToHash("x");
     private readonly int YHash = Animator.StringToHash("y");
     private Vector3 lastFootstepPosition;
@@ -66,6 +77,10 @@ public class Movement : NetworkBehaviour
     private void Start()
     {
         originalYScale = transform.localScale.y;
+        if (CameraTransform != null)
+        {
+            defaultCameraLocalPos = CameraTransform.localPosition;
+        }
 
         if (!IsOwner && IsSpawned)
         {
@@ -89,6 +104,7 @@ public class Movement : NetworkBehaviour
         if (IsSpawned && !IsOwner) return;
         HandleCameraLook();
         HandleCrouch();
+        HandleHeadbob();
     }
 
     private void HandleAnimations(Vector2 inputMovement)
@@ -127,6 +143,31 @@ public class Movement : NetworkBehaviour
         transform.localScale = Vector3.Lerp(transform.localScale, targetScale, Time.deltaTime * CrouchTransitionSpeed);
     }
 
+    private void HandleHeadbob()
+    {
+        if (CameraTransform == null) return;
+
+        Vector2 moveInput = GetMoveInput();
+        bool isMoving = EnableHeadbob && isGrounded && moveInput.sqrMagnitude > 0.01f;
+
+        if (isMoving)
+        {
+            float speedMultiplier = isCrouching ? BobCrouchMultiplier : 1f;
+            bobTimer += Time.deltaTime * (BobFrequency * speedMultiplier);
+
+            float horizontalBob = Mathf.Cos(bobTimer) * (BobHorizontalAmount * speedMultiplier);
+            float verticalBob = Mathf.Sin(bobTimer * 2f) * (BobVerticalAmount * speedMultiplier);
+
+            Vector3 targetLocalPos = defaultCameraLocalPos + new Vector3(horizontalBob, verticalBob, 0f);
+            CameraTransform.localPosition = Vector3.Lerp(CameraTransform.localPosition, targetLocalPos, Time.deltaTime * BobSmoothSpeed);
+        }
+        else
+        {
+            bobTimer = 0f;
+            CameraTransform.localPosition = Vector3.Lerp(CameraTransform.localPosition, defaultCameraLocalPos, Time.deltaTime * BobSmoothSpeed);
+        }
+    }
+
     private void HandleCameraLook()
     {
         if (CameraTransform == null) return;
@@ -147,7 +188,7 @@ public class Movement : NetworkBehaviour
         Vector3 rawMoveDir = (transform.forward * moveInput.y + transform.right * moveInput.x).normalized;
 
         float currentGroundCheckDist = GroundCheckDistance * (transform.localScale.y / originalYScale);
-        bool isGrounded = Physics.Raycast(transform.position, Vector3.down, out RaycastHit hit, currentGroundCheckDist, GroundMask);
+        isGrounded = Physics.Raycast(transform.position, Vector3.down, out RaycastHit hit, currentGroundCheckDist, GroundMask);
 
         Vector3 moveDir = rawMoveDir;
         if (isGrounded) moveDir = Vector3.ProjectOnPlane(rawMoveDir, hit.normal).normalized;
