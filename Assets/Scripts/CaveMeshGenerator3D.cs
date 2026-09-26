@@ -44,8 +44,9 @@ public class CaveMeshGenerator3D : NetworkBehaviour
     public bool enableOrganicNoise = true;
     [Range(0.01f, 0.3f)]
     public float floorNoiseScale = 0.08f;
+    [Tooltip("Floor noise amount (kept at 0 to guarantee flat floors without bumps)")]
     [Range(0f, 3f)]
-    public float floorNoiseAmount = 0.8f;
+    public float floorNoiseAmount = 0.0f;
     [Range(0.01f, 0.3f)]
     public float ceilingNoiseScale = 0.06f;
     [Range(0f, 5f)]
@@ -583,7 +584,7 @@ public class CaveMeshGenerator3D : NetworkBehaviour
     {
         enableOrganicNoise = enableOrganicNoise,
         floorNoiseScale = floorNoiseScale,
-        floorNoiseAmount = floorNoiseAmount,
+        floorNoiseAmount = 0f, // Floor is always generated flat, without bumps
         ceilingNoiseScale = ceilingNoiseScale,
         ceilingNoiseAmount = ceilingNoiseAmount
     };

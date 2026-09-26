@@ -120,7 +120,7 @@ namespace CaveGeneration.Configuration
         {
             enableOrganicNoise = true,
             floorNoiseScale = 0.08f,
-            floorNoiseAmount = 0.8f,
+            floorNoiseAmount = 0f,
             ceilingNoiseScale = 0.06f,
             ceilingNoiseAmount = 1.5f
         };

@@ -18,9 +18,8 @@ namespace CaveGeneration.Noise
 
         public float GetFloorY(float x, float z, float baseElevation)
         {
-            if (!Settings.enableOrganicNoise || Settings.floorNoiseAmount <= 0f) return baseElevation;
-            float n = Mathf.PerlinNoise(x * Settings.floorNoiseScale, z * Settings.floorNoiseScale);
-            return baseElevation + (n - 0.5f) * Settings.floorNoiseAmount;
+            // Floor is always generated flat, without bumps
+            return baseElevation;
         }
 
         public float GetCeilingY(float x, float z, float baseElevation)
