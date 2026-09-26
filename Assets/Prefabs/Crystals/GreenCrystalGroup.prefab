@@ -459,6 +459,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 6002406008343671277}
+  - component: {fileID: -5991938463269510681}
   m_Layer: 0
   m_Name: GreenCrystalGroup
   m_TagString: Untagged
@@ -483,6 +484,18 @@ Transform:
   - {fileID: 3185742752190090211}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &-5991938463269510681
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 938670213892807506}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9f0790cf4e214c140a02d117bdbcf0b9, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::HCoop.Items.CrystalGroup
 --- !u!1 &3119947032176555832
 GameObject:
   m_ObjectHideFlags: 0
@@ -1264,9 +1277,9 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 6908315701561482405}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalRotation: {x: -0.18445627, y: -0, z: -0, w: 0.9828408}
   m_LocalPosition: {x: 0.001, y: -0.052192688, z: -0.013}
-  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_LocalScale: {x: 1.6823198, y: 1.6823198, z: 1.6823198}
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 4291755244839988952}
@@ -1290,7 +1303,7 @@ Transform:
   - {fileID: 18770173493825333}
   - {fileID: 5049912834138195023}
   m_Father: {fileID: 6002406008343671277}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+  m_LocalEulerAnglesHint: {x: -21.259, y: 0, z: 0}
 --- !u!1 &6945004182885056966
 GameObject:
   m_ObjectHideFlags: 0

@@ -70,6 +70,42 @@ namespace CaveGeneration.Geometry
             return Vector2.Distance(p, projection);
         }
 
+        public static bool IsPointInsidePolygon(Vector2 point, List<Vector2> polygon)
+        {
+            if (polygon == null || polygon.Count < 3) return false;
+            bool inside = false;
+            int count = polygon.Count;
+            for (int i = 0, j = count - 1; i < count; j = i++)
+            {
+                Vector2 pi = polygon[i];
+                Vector2 pj = polygon[j];
+                if (((pi.y > point.y) != (pj.y > point.y)) &&
+                    (point.x < (pj.x - pi.x) * (point.y - pi.y) / (pj.y - pi.y) + pi.x))
+                {
+                    inside = !inside;
+                }
+            }
+            return inside;
+        }
+
+        public static float GetDistanceToPolygonBoundary(Vector2 point, List<Vector2> polygon)
+        {
+            if (polygon == null || polygon.Count < 2) return float.MaxValue;
+            float minDistance = float.MaxValue;
+            int count = polygon.Count;
+            for (int i = 0; i < count; i++)
+            {
+                Vector2 p1 = polygon[i];
+                Vector2 p2 = polygon[(i + 1) % count];
+                float dist = DistancePointToSegmentXZ(point, p1, p2);
+                if (dist < minDistance)
+                {
+                    minDistance = dist;
+                }
+            }
+            return minDistance;
+        }
+
         /// <summary>
         /// Calculates all doorway frames (center, left, right) for a room based on connected corridors.
         /// </summary>

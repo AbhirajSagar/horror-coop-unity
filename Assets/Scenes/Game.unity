@@ -402,6 +402,27 @@ MonoBehaviour:
   minRoomDistance: 0
   maxRoomDistance: 0
   roomPadding: 0
+  enablePrefabSpawning: 1
+  propsParentContainer: {fileID: 0}
+  spawnRules:
+  - ruleName: 
+    prefab: {fileID: -1726497642944086586, guid: cd76d725de488a0449ac334844c1584a, type: 3}
+    locationType: 0
+    distributionMode: 0
+    spawnChance: 0.774
+    minCount: 3
+    maxCount: 12
+    clearanceBoxSize: {x: 0, y: 0, z: 0}
+    wallPadding: 0
+    doorwayPadding: 0
+    minDistanceBetweenItems: 0
+    positionOffset: {x: 0, y: 0, z: 0}
+    alignToSurfaceNormal: 0
+    randomYaw: 0
+    enableRandomScale: 0
+    minScale: 1
+    maxScale: 1
+    corridorLateralSpread: 0
 --- !u!64 &950532326
 MeshCollider:
   m_ObjectHideFlags: 0

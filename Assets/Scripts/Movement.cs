@@ -222,6 +222,7 @@ public class Movement : NetworkBehaviour
 
     public void PlayAudioStepSound()
     {
+        AudioPlayer.pitch = UnityEngine.Random.Range(0.8f, 1.2f);
         AudioPlayer.PlayOneShot(FootstepSounds[UnityEngine.Random.Range(0, FootstepSounds.Length)]);
     }
 }

@@ -130,6 +130,11 @@ public class CaveMeshGenerator3D : NetworkBehaviour
     [Range(0f, 20f)]
     public float roomPadding = 3.0f;
 
+    [Header("Prefab & Prop Spawning")]
+    public bool enablePrefabSpawning = true;
+    public Transform propsParentContainer;
+    public List<PrefabSpawnRule> spawnRules = new List<PrefabSpawnRule>();
+
     public static CaveMeshGenerator3D Instance { get; private set; }
 
     // Modular Generator Pipeline
@@ -140,6 +145,7 @@ public class CaveMeshGenerator3D : NetworkBehaviour
     private readonly RoomFeatureBuilder roomFeatureBuilder = new RoomFeatureBuilder();
     private readonly CorridorMeshBuilder corridorMeshBuilder = new CorridorMeshBuilder();
     private readonly CavePlayerSpawner playerSpawner = new CavePlayerSpawner();
+    private readonly CavePrefabSpawner prefabSpawner = new CavePrefabSpawner();
     private TerrainHeightSampler heightSampler;
 
     private List<RoomData> lastGeneratedRooms = new List<RoomData>();
@@ -147,6 +153,7 @@ public class CaveMeshGenerator3D : NetworkBehaviour
 
     public IReadOnlyList<RoomData> GeneratedRooms => lastGeneratedRooms;
     public IReadOnlyList<CorridorData> GeneratedCorridors => lastGeneratedCorridors;
+    public IReadOnlyList<SpawnedItemRecord> SpawnedProps => prefabSpawner.SpawnedRecords;
 
     private NetworkVariable<FixedString64Bytes> syncedSeed = new NetworkVariable<FixedString64Bytes>(
         default,
@@ -398,11 +405,59 @@ public class CaveMeshGenerator3D : NetworkBehaviour
         collider.sharedMesh = null;
         collider.sharedMesh = mesh;
 
-        // Step 5: Place player randomly in one of the generated rooms
+        // Step 5: Spawn prefabs and props across rooms and corridors
+        if (enablePrefabSpawning)
+        {
+            Transform container = GetOrCreatePropsContainer();
+            List<Vector3> playerSpawnPositions = new List<Vector3>();
+            for (int r = 0; r < rooms.Count; r++)
+            {
+                playerSpawnPositions.Add(playerSpawner.GetSpawnPosition(rooms, r, playerSpawnYOffset, heightSampler, rooms[r].center));
+            }
+
+            prefabSpawner.SpawnPrefabs(
+                spawnRules,
+                rooms,
+                roomPerimeters,
+                corridors,
+                corridorWidth,
+                corridorHeight,
+                enableWindingCorridors,
+                corridorWindingAmount,
+                corridorWindingFrequency,
+                heightSampler,
+                seed,
+                container,
+                playerSpawnPositions
+            );
+        }
+
+        // Step 6: Place player randomly in one of the generated rooms
         if (Application.isPlaying && placePlayerOnStart)
         {
             PlacePlayerInRandomRoom(rooms);
         }
+    }
+
+    public void ClearSpawnedPrefabs()
+    {
+        Transform container = GetOrCreatePropsContainer();
+        prefabSpawner.ClearSpawnedProps(container);
+    }
+
+    private Transform GetOrCreatePropsContainer()
+    {
+        if (propsParentContainer != null) return propsParentContainer;
+
+        Transform existing = transform.Find("GeneratedProps");
+        if (existing != null) return existing;
+
+        GameObject containerObj = new GameObject("GeneratedProps");
+        containerObj.transform.SetParent(transform);
+        containerObj.transform.localPosition = Vector3.zero;
+        containerObj.transform.localRotation = Quaternion.identity;
+        containerObj.transform.localScale = Vector3.one;
+        return containerObj.transform;
     }
 
     public void GenerateRandomSeed()

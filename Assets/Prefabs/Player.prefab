@@ -108,7 +108,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d5a57f767e5e46a458fc5d3c628d0cbb, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Unity.Netcode.Runtime::Unity.Netcode.NetworkObject
-  GlobalObjectIdHash: 756749753
+  GlobalObjectIdHash: 3795310295
   InScenePlacedSourceGlobalObjectIdHash: 0
   DeferredDespawnTick: 0
   Ownership: 1
@@ -154,7 +154,13 @@ MonoBehaviour:
   CrouchActionRef: {fileID: 7040659881675835329, guid: 052faaac586de48259a63d0c4782560b, type: 3}
   FootstepSounds:
   - {fileID: 8300000, guid: 1cc2201f2fd132448a17d469b4732190, type: 3}
-  FootstepDistance: 1.8
+  FootstepDistance: 1.4
+  EnableHeadbob: 1
+  BobFrequency: 10
+  BobHorizontalAmount: 0.025
+  BobVerticalAmount: 0.035
+  BobCrouchMultiplier: 0.6
+  BobSmoothSpeed: 10
   AudioPlayer: {fileID: 8698757075387961264}
   Listener: {fileID: 1086032521680635827}
 --- !u!54 &8512673639720656571

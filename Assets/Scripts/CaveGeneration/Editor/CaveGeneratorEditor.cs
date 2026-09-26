@@ -31,6 +31,12 @@ namespace CaveGeneration.Editor
             {
                 generator.PlacePlayerInRandomRoom();
             }
+
+            if (GUILayout.Button("Clear Spawned Prefabs", GUILayout.Height(25)))
+            {
+                generator.ClearSpawnedPrefabs();
+                EditorUtility.SetDirty(generator);
+            }
         }
     }
 }
